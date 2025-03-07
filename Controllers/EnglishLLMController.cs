@@ -1,11 +1,10 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using System.Net.Http.Headers;
-using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Net;
+using aclearningutil.Models;
 
 namespace aclearningutil.Controllers
 {
@@ -22,29 +21,15 @@ namespace aclearningutil.Controllers
         //private const string modelName = "deepseek-reasoner";
         private const string url = "https://api.deepseek.com/v1/chat/completions";
 
-        public class ReplyContent
-        {
-            public string Content { get; set; }
-        }
-
-        public class LLMConversationMessage
-        {
-            public string role { get; set; }
-            public string content { get; set; }
-        }
-
-        public class LLMConversation
-        {
-            public string model { get; set; }
-            public LLMConversationMessage[] messages { get; set; }
-        }
         private LLMConversation conv = new LLMConversation();
         private List<LLMConversationMessage> listMessages = new List<LLMConversationMessage>();
         private static HttpClient httpClient = new HttpClient();
         private readonly IConfiguration Configuration;
+        private readonly ILogger<EnglishLLMController> _logger;
 
-        public EnglishLLMController(IConfiguration configuration) {
+        public EnglishLLMController(IConfiguration configuration, ILogger<EnglishLLMController> logger) {
             Configuration = configuration;
+            _logger = logger;
 
             conv.model = modelName;
             listMessages.Add(new LLMConversationMessage()
@@ -56,7 +41,7 @@ namespace aclearningutil.Controllers
         }
 
         [HttpGet("details")]
-        public async Task<ActionResult<ReplyContent>> GetLLMReply(string context)
+        public async Task<ActionResult<LLMReplyContent>> GetLLMReply(string context)
         {
             if (String.IsNullOrEmpty(context)) {
                 return new ContentResult
@@ -94,7 +79,7 @@ namespace aclearningutil.Controllers
                 //});
 
                 // 输出结果
-                return new ReplyContent()
+                return new LLMReplyContent()
                 {
                     Content = (string)rstmsg["content"]
                 };

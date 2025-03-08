@@ -5,6 +5,32 @@ using System.Text.Json;
 
 namespace aclearningutil.Util
 {
+    public class AliTokenDetail
+    {
+        public AliTokenDetail()
+        {
+            UserId = string.Empty;
+            Id = string.Empty;
+            ExpireTime = 0;
+        }
+
+        public string UserId { get; set; }
+        public string Id { get; set; }
+        public int ExpireTime { get; set; }
+    }
+
+    public class AliToken
+    {
+        public AliToken()
+        {
+            ErrMsg = string.Empty;
+            Token = new AliTokenDetail();
+        }
+
+        public string ErrMsg { get; set; }
+        public AliTokenDetail Token { get; set; }
+    }
+
     public class AliTokenUtil
     {
         private static string percentEncode(string value)
@@ -29,16 +55,18 @@ namespace aclearningutil.Util
         {
             // 所有请求参数
             DateTime date = DateTime.UtcNow;
-            Dictionary<string, string> queryParamsMap = new Dictionary<string, string>();
-            queryParamsMap.Add("AccessKeyId", accessKeyId);
-            queryParamsMap.Add("Action", "CreateToken");
-            queryParamsMap.Add("Version", "2019-02-28");
-            queryParamsMap.Add("Timestamp", getISO8601Time(date));
-            queryParamsMap.Add("Format", "JSON");
-            queryParamsMap.Add("RegionId", "cn-shanghai");
-            queryParamsMap.Add("SignatureMethod", "HMAC-SHA1");
-            queryParamsMap.Add("SignatureVersion", "1.0");
-            queryParamsMap.Add("SignatureNonce", getUniqueNonce());
+            Dictionary<string, string> queryParamsMap = new()
+            {
+                { "AccessKeyId", accessKeyId },
+                { "Action", "CreateToken" },
+                { "Version", "2019-02-28" },
+                { "Timestamp", getISO8601Time(date) },
+                { "Format", "JSON" },
+                { "RegionId", "cn-shanghai" },
+                { "SignatureMethod", "HMAC-SHA1" },
+                { "SignatureVersion", "1.0" },
+                { "SignatureNonce", getUniqueNonce() }
+            };
 
             // 对参数Key排序
             string[] sortedKeys = queryParamsMap.Keys.ToArray();
@@ -125,18 +153,6 @@ namespace aclearningutil.Util
             return "";
         }
 
-        public class AliTokenDetail
-        {
-            public string UserId { get; set; }
-            public string Id { get; set; }
-            public int ExpireTime { get; set; }
-        }
-
-        public class AliToken
-        {
-            public string ErrMsg { get; set; }
-            public AliTokenDetail Token { get; set; }
-        }
 
         public async Task<AliToken> getToken(String accessKey, String accessSecret)
         {

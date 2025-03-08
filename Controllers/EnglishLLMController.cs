@@ -2,6 +2,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Net;
+using aclearningutil.Models;
 using aclearningutil.Util;
 
 namespace aclearningutil.Controllers
@@ -10,12 +11,14 @@ namespace aclearningutil.Controllers
     [ApiController]
     public class EnglishLLMController : ControllerBase
     {
-        private LLMConversation conv = new LLMConversation();
-        private List<LLMConversationMessage> listMessages = new List<LLMConversationMessage>();
+        private readonly LLMConversation conv = new();
+        private readonly List<LLMConversationMessage> listMessages = [];
         private readonly IConfiguration Configuration;
+        private readonly ILogger<EnglishLLMController> _logger;
 
-        public EnglishLLMController(IConfiguration configuration) {
+        public EnglishLLMController(IConfiguration configuration, ILogger<EnglishLLMController> logger) {
             Configuration = configuration;
+            _logger = logger;
 
             conv.model = LLMUtil.deepseekModelName;
             listMessages.Add(new LLMConversationMessage()
@@ -30,6 +33,7 @@ namespace aclearningutil.Controllers
         public async Task<ActionResult<LLMReplyContent>> GetLLMReply(string context)
         {
             if (String.IsNullOrEmpty(context)) {
+                _logger.LogWarning("Context is mandatory for get LLM reply");
                 return new ContentResult
                 {
                     StatusCode = (int)HttpStatusCode.InternalServerError,
@@ -48,27 +52,34 @@ namespace aclearningutil.Controllers
                 role = "user",
                 content = context
             });
-            conv.messages = tmpmsgs.ToArray();
+            conv.messages = [.. tmpmsgs];
             var jsonContent = JsonSerializer.Serialize(conv);
 
             // 发送请求并获取响应
             var apiKey = Configuration["DeepSeek:APIKey"];
-            string result = await LLMUtil.SendPostRequestAsync(LLMUtil.deepseekAPIUrl, jsonContent, apiKey);
-            if (!result.StartsWith("ERROR: "))
+            if(String.IsNullOrEmpty(apiKey))
             {
-                JsonObject jsonresult = (JsonObject)JsonObject.Parse(result);
-                var rstmsg = jsonresult["choices"][0]["message"];
-                //listMessages.Add(new LLMConversationMessage()
-                //{
-                //    role = (string)rstmsg["role"],
-                //    content = (string)rstmsg["content"]
-                //});
-
-                // 输出结果
-                return new LLMReplyContent()
+                _logger.LogError("Failed to get API key");
+            }
+            else
+            {
+                string result = await LLMUtil.SendPostRequestAsync(LLMUtil.deepseekAPIUrl, jsonContent, apiKey);
+                if (!result.StartsWith("ERROR: "))
                 {
-                    Content = (string)rstmsg["content"]
-                };
+                    JsonObject jsonresult = (JsonObject)JsonObject.Parse(result);
+                    var rstmsg = jsonresult["choices"][0]["message"];
+                    //listMessages.Add(new LLMConversationMessage()
+                    //{
+                    //    role = (string)rstmsg["role"],
+                    //    content = (string)rstmsg["content"]
+                    //});
+
+                    // 输出结果
+                    return new LLMReplyContent()
+                    {
+                        Content = (string)rstmsg["content"]
+                    };
+                }
             }
 
             return new ContentResult

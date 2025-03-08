@@ -1,7 +1,37 @@
-using aclearningutil.Util;
 using Microsoft.Extensions.FileProviders;
+using Serilog;
+using Serilog.Events;
+using aclearningutil.Util;
 
+// Creation
 var builder = WebApplication.CreateBuilder(args);
+// Logs
+if(builder.Environment.IsDevelopment())
+{
+    builder.Host.UseSerilog((context, config) =>
+    {
+        config.MinimumLevel.Is(LogEventLevel.Information)
+             .Enrich.FromLogContext()
+             .WriteTo.Console();
+    });
+}
+else if(builder.Environment.IsProduction())
+{
+    builder.Host.UseSerilog((context, config) =>
+    {
+        var outputTemplate = "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level}] {Message}{NewLine}{Exception}";
+
+        config.MinimumLevel.Is(LogEventLevel.Warning)
+             .Enrich.FromLogContext()
+             .WriteTo.File(
+                 path: "../Logs/aclearningutil/log-.txt",
+                 rollingInterval: RollingInterval.Day, // 按天滚动
+                 outputTemplate: outputTemplate,
+                 retainedFileCountLimit: 14 // 保留最近7天日志
+             );
+    });
+}
+// CORS support
 var allowOrigin = "";
 if (builder.Environment.IsDevelopment())
 {
@@ -11,7 +41,6 @@ else if (builder.Environment.IsProduction())
 {
     allowOrigin = "https://www.alvachien.com/learning/*";
 }
-
 var MyAllowSpecificOrigins = "MyAllowSpecificOrigins";
 builder.Services.AddCors(options =>
 {    
@@ -23,7 +52,7 @@ builder.Services.AddCors(options =>
                                 .AllowAnyMethod();
                       });
 });
-
+// Controller
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
@@ -35,12 +64,16 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseSwaggerUI(options => // UseSwaggerUI is called only in Development.
+    {
+        //options.SwaggerEndpoint("/swagger/v1/swagger.json", "v1");
+        //options.RoutePrefix = string.Empty;
+    });
 }
 
+app.UseSerilogRequestLogging();
 app.UseHttpsRedirection();
 var cacheMaxAgeOneWeek = (60 * 60 * 24 * 7).ToString();
-//Console.WriteLine(builder.Environment.ContentRootPath);
 
 app.UseCors(MyAllowSpecificOrigins);
 
@@ -53,8 +86,7 @@ app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = ctx =>
     {
-        ctx.Context.Response.Headers.Append(
-             "Cache-Control", $"public, max-age={cacheMaxAgeOneWeek}");
+        ctx.Context.Response.Headers.Append("Cache-Control", $"public, max-age={cacheMaxAgeOneWeek}");
     },
     FileProvider = new PhysicalFileProvider(sharedfolder),
     RequestPath = "/audio"

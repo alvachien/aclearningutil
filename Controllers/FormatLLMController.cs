@@ -1,11 +1,9 @@
-﻿using aclearningutil.Util;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using System.Net.Http.Headers;
-using System.Net;
+﻿using System.Net;
 using System.Text.Json.Nodes;
 using System.Text.Json;
-using System.Text;
+using Microsoft.AspNetCore.Mvc;
+using aclearningutil.Models;
+using aclearningutil.Util;
 
 namespace aclearningutil.Controllers
 {
@@ -13,13 +11,15 @@ namespace aclearningutil.Controllers
     [ApiController]
     public class FormatLLMController : ControllerBase
     {
-        private LLMConversation conv = new LLMConversation();
+        private readonly LLMConversation conv = new();
         private readonly IConfiguration Configuration;
+        private readonly ILogger<FormatLLMController> _logger;
 
-        public FormatLLMController(IConfiguration configuration)
+        public FormatLLMController(IConfiguration configuration, ILogger<FormatLLMController> logger)
         {
             Configuration = configuration;
-
+            _logger = logger;
+            // Default LLM
             conv.model = LLMUtil.deepseekModelName;
         }
 
@@ -27,8 +27,9 @@ namespace aclearningutil.Controllers
         [HttpPost]
         public async Task<ActionResult<LLMReplyContent>> AskAnything([FromBody] FormatLLMInput input)
         {
-            if (String.IsNullOrEmpty(input.context))
+            if (String.IsNullOrEmpty(input.Context))
             {
+                _logger.LogWarning("Context is empty for get LLM reply");
                 return new ContentResult
                 {
                     StatusCode = (int)HttpStatusCode.InternalServerError,
@@ -38,50 +39,59 @@ namespace aclearningutil.Controllers
             }
 
             string initcontent = string.Empty;
-            if (input.formattype == "math")
+            if (input.FormatType == "math")
             {
                 initcontent = "你是经验丰富的数学老师。";
             }
-            else if(input.formattype == "physics")
+            else if(input.FormatType == "physics")
             {
                 initcontent = "你是经验丰富的物理老师。";
             }
-            else if(input.formattype == "chemistry")
+            else if(input.FormatType == "chemistry")
             {
                 initcontent = "你是经验丰富的化学老师。";
             }
-            List<LLMConversationMessage> tmpmsgs = new List<LLMConversationMessage>();
-            tmpmsgs.Add(new LLMConversationMessage()
-            {
-                role = "system",
-                content = initcontent
-            });
-            tmpmsgs.Add(new LLMConversationMessage()
-            {
-                role = "user",
-                content = input.context
-            });
-            conv.messages = tmpmsgs.ToArray();
+            List<LLMConversationMessage> tmpmsgs =
+            [
+                new LLMConversationMessage()
+                {
+                    role = "system",
+                    content = initcontent
+                },
+                new LLMConversationMessage()
+                {
+                    role = "user",
+                    content = input.Context
+                },
+            ];
+            conv.messages = [.. tmpmsgs];
             var jsonContent = JsonSerializer.Serialize(conv);
 
             // 发送请求并获取响应
             var apiKey = Configuration["DeepSeek:APIKey"];
-            string result = await LLMUtil.SendPostRequestAsync(LLMUtil.deepseekAPIUrl, jsonContent, apiKey);
-            if (!result.StartsWith("ERROR: "))
+            if (String.IsNullOrEmpty(apiKey))
             {
-                JsonObject jsonresult = (JsonObject)JsonObject.Parse(result);
-                var rstmsg = jsonresult["choices"][0]["message"];
-                //listMessages.Add(new LLMConversationMessage()
-                //{
-                //    role = (string)rstmsg["role"],
-                //    content = (string)rstmsg["content"]
-                //});
-
-                // 输出结果
-                return new LLMReplyContent()
+                _logger.LogError("Failed to get API key");
+            }
+            else
+            {
+                string result = await LLMUtil.SendPostRequestAsync(LLMUtil.deepseekAPIUrl, jsonContent, apiKey);
+                if (!result.StartsWith("ERROR: "))
                 {
-                    Content = (string)rstmsg["content"]
-                };
+                    JsonObject jsonresult = (JsonObject)JsonObject.Parse(result);
+                    var rstmsg = jsonresult["choices"][0]["message"];
+                    //listMessages.Add(new LLMConversationMessage()
+                    //{
+                    //    role = (string)rstmsg["role"],
+                    //    content = (string)rstmsg["content"]
+                    //});
+
+                    // 输出结果
+                    return new LLMReplyContent()
+                    {
+                        Content = (string)rstmsg["content"]
+                    };
+                }
             }
 
             return new ContentResult
@@ -92,11 +102,4 @@ namespace aclearningutil.Controllers
             };
         }
     }
-
-    public class FormatLLMInput
-    {
-        public required string formattype { get; set; }
-        public required string context { get; set; }
-    }
-
 }

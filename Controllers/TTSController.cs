@@ -1,8 +1,8 @@
 ﻿using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Net.Http.Headers;
 using aclearningutil.Util;
 using System.Net;
+using aclearningutil.Models;
 
 namespace aclearningutil.Controllers
 {
@@ -10,22 +10,13 @@ namespace aclearningutil.Controllers
     [ApiController]
     public class TTSController : ControllerBase
     {
-        public class SentenceJsonMap
-        {
-            public string Sentence { get; set; }
-            public string FileName { get; set; }
-        }
-
-        public class AudioFile
-        {
-            public string AudioFileUrl { get; set; }
-        }
-
         private string subfolder = "";
         private const string jsonMapFile = "tts_map.json";
         private readonly IConfiguration Configuration;
+        private readonly ILogger<TTSController> _logger;
 
-        public TTSController(IConfiguration configuration) {
+        public TTSController(IConfiguration configuration, ILogger<TTSController> logger)
+        {
             Configuration = configuration;
 
             subfolder = System.IO.Directory.GetCurrentDirectory() + "\\AudioFiles\\";
@@ -35,6 +26,8 @@ namespace aclearningutil.Controllers
                 string json = JsonSerializer.Serialize(maps);
                 System.IO.File.WriteAllText(subfolder + jsonMapFile, json);
             }
+
+            _logger = logger;
         }
 
         [HttpGet("details")]
@@ -42,6 +35,7 @@ namespace aclearningutil.Controllers
         {
             if (String.IsNullOrEmpty(sentence))
             {
+                _logger.LogError("Sentence is empty!");
                 return new ContentResult
                 {
                     StatusCode = (int)HttpStatusCode.InternalServerError,
@@ -66,6 +60,8 @@ namespace aclearningutil.Controllers
 
             if (!isfileexist)
             {
+                _logger.LogInformation($"File for {sentence} not found!");
+
                 var appKey = Configuration["Aliyun:TTSAPIKey"];
                 var appAccessKey = Configuration["Aliyun:TTSAccessKey"];
                 var appAccessSecret = Configuration["Aliyun:TTSAccessSecret"];
@@ -90,10 +86,10 @@ namespace aclearningutil.Controllers
                 /**
                  * 发送HTTPS GET请求，处理服务端的响应。
                  */
-                HttpClient client = new HttpClient();
+                HttpClient client = new();
                 HttpResponseMessage response = null;
                 response = client.GetAsync(url).Result;
-                string contentType = null;
+                string contentType = string.Empty;
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -113,7 +109,6 @@ namespace aclearningutil.Controllers
                     fs.Write(audioBuff, 0, audioBuff.Length);
                     fs.Flush();
                     fs.Close();
-                    System.Console.WriteLine("The GET request succeed!");
 
                     try
                     {
@@ -158,6 +153,7 @@ namespace aclearningutil.Controllers
                     AudioFileUrl = "audio/" + wavfile
                 };
 
+            _logger.LogError($"Wave file for {wavfile} not found");
             return new ContentResult
             {
                 StatusCode = (int)HttpStatusCode.InternalServerError,

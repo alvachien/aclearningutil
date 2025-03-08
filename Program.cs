@@ -44,6 +44,11 @@ var cacheMaxAgeOneWeek = (60 * 60 * 24 * 7).ToString();
 
 app.UseCors(MyAllowSpecificOrigins);
 
+var sharedfolder = Path.Combine(builder.Environment.ContentRootPath, "AudioFiles");
+if (!Directory.Exists(sharedfolder))
+{
+    Directory.CreateDirectory(sharedfolder);
+}
 app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = ctx =>
@@ -51,7 +56,7 @@ app.UseStaticFiles(new StaticFileOptions
         ctx.Context.Response.Headers.Append(
              "Cache-Control", $"public, max-age={cacheMaxAgeOneWeek}");
     },
-    FileProvider = new PhysicalFileProvider(Path.Combine(builder.Environment.ContentRootPath, "AudioFiles")),
+    FileProvider = new PhysicalFileProvider(sharedfolder),
     RequestPath = "/audio"
 });
 

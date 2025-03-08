@@ -37,7 +37,6 @@ namespace aclearningutil.Controllers
             }
         }
 
-
         [HttpGet("details")]
         public async Task<ActionResult<AudioFile>> GetTTS(string sentence)
         {

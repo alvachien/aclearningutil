@@ -1,11 +1,8 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using System.Net.Http.Headers;
-using System.Net.Http;
-using System.Text;
+﻿using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Net;
+using aclearningutil.Util;
 
 namespace aclearningutil.Controllers
 {
@@ -13,40 +10,14 @@ namespace aclearningutil.Controllers
     [ApiController]
     public class EnglishLLMController : ControllerBase
     {
-        // Aliyun Model
-        //private const string modelName = "qwen-plus";
-        //private const string url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-
-        // Deepseek model
-        private const string modelName = "deepseek-chat";
-        //private const string modelName = "deepseek-reasoner";
-        private const string url = "https://api.deepseek.com/v1/chat/completions";
-
-        public class ReplyContent
-        {
-            public string Content { get; set; }
-        }
-
-        public class LLMConversationMessage
-        {
-            public string role { get; set; }
-            public string content { get; set; }
-        }
-
-        public class LLMConversation
-        {
-            public string model { get; set; }
-            public LLMConversationMessage[] messages { get; set; }
-        }
         private LLMConversation conv = new LLMConversation();
         private List<LLMConversationMessage> listMessages = new List<LLMConversationMessage>();
-        private static HttpClient httpClient = new HttpClient();
         private readonly IConfiguration Configuration;
 
         public EnglishLLMController(IConfiguration configuration) {
             Configuration = configuration;
 
-            conv.model = modelName;
+            conv.model = LLMUtil.deepseekModelName;
             listMessages.Add(new LLMConversationMessage()
                 {
                     role = "system",
@@ -56,7 +27,7 @@ namespace aclearningutil.Controllers
         }
 
         [HttpGet("details")]
-        public async Task<ActionResult<ReplyContent>> GetLLMReply(string context)
+        public async Task<ActionResult<LLMReplyContent>> GetLLMReply(string context)
         {
             if (String.IsNullOrEmpty(context)) {
                 return new ContentResult
@@ -82,7 +53,7 @@ namespace aclearningutil.Controllers
 
             // 发送请求并获取响应
             var apiKey = Configuration["DeepSeek:APIKey"];
-            string result = await SendPostRequestAsync(url, jsonContent, apiKey);
+            string result = await LLMUtil.SendPostRequestAsync(LLMUtil.deepseekAPIUrl, jsonContent, apiKey);
             if (!result.StartsWith("ERROR: "))
             {
                 JsonObject jsonresult = (JsonObject)JsonObject.Parse(result);
@@ -94,7 +65,7 @@ namespace aclearningutil.Controllers
                 //});
 
                 // 输出结果
-                return new ReplyContent()
+                return new LLMReplyContent()
                 {
                     Content = (string)rstmsg["content"]
                 };
@@ -106,29 +77,6 @@ namespace aclearningutil.Controllers
                 Content = "No returns from LLM.",
                 ContentType = "text/plain"
             };
-        }
-
-        private static async Task<string> SendPostRequestAsync(string url, string jsonContent, string apiKey)
-        {
-            using (var content = new StringContent(jsonContent, Encoding.UTF8, "application/json"))
-            {
-                // 设置请求头
-                httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-                httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-                // 发送请求并获取响应
-                HttpResponseMessage response = await httpClient.PostAsync(url, content);
-
-                // 处理响应
-                if (response.IsSuccessStatusCode)
-                {
-                    return await response.Content.ReadAsStringAsync();
-                }
-                else
-                {
-                    return $"ERROR: {response.StatusCode}";
-                }
-            }
         }
     }
 }

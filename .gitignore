@@ -4,5 +4,6 @@ bin/
 obj/
 
 AudioFiles/
+Storage/
 
 *.csproj.user

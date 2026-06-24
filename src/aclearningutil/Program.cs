@@ -98,6 +98,7 @@ using (var scope = app.Services.CreateScope())
     {
         (1, "词汇", "Vocabulary"),
         (2, "句子", "Sentence"),
+        (6, "知识库", "Knowledge Bank"),
     };
     foreach (var (id, nameCn, nameEn) in categories)
     {
@@ -164,10 +165,11 @@ using (var scope = app.Services.CreateScope())
         }
     }
 
-    // Dynamically sync LearningContents from JSON index files (words.json -> Vocabulary, sentences.json -> Sentences)
-    static async Task SyncLearningContentsFromJsonAsync(AppDbContext db, string storageFolder, int categoryId, string jsonFileName)
+    // Dynamically sync LearningContents from JSON index files
+    // Supports different subfolders (e.g., "learnenglish" for vocabulary/sentences, "knowledge-exercises" for knowledge bank)
+    static async Task SyncLearningContentsFromJsonAsync(AppDbContext db, string storageFolder, string subFolder, int categoryId, string jsonFileName)
     {
-        var jsonFilePath = Path.Combine(storageFolder, "learnenglish", jsonFileName);
+        var jsonFilePath = Path.Combine(storageFolder, subFolder, jsonFileName);
         if (!File.Exists(jsonFilePath))
         {
             Console.WriteLine($"Index file not found: {jsonFilePath}, skipping sync for category {categoryId}.");
@@ -188,9 +190,9 @@ using (var scope = app.Services.CreateScope())
         foreach (var entry in jsonEntries)
         {
             var file = entry.GetProperty("file").GetString()!;
-            jsonFileUrls.Add($"storage/learnenglish/{file}");
-            jsonFileUrls.Add($"data/learnenglish/{file}");
-            jsonFileUrls.Add($"learnenglish/{file}");
+            jsonFileUrls.Add($"storage/{subFolder}/{file}");
+            jsonFileUrls.Add($"data/{subFolder}/{file}");
+            jsonFileUrls.Add($"{subFolder}/{file}");
         }
 
         // Pre-load existing DB records matching any of the known FileUrl patterns
@@ -203,9 +205,9 @@ using (var scope = app.Services.CreateScope())
         {
             var name = entry.GetProperty("name").GetString()!;
             var file = entry.GetProperty("file").GetString()!;
-            var primaryFileUrl = $"storage/learnenglish/{file}";
-            var legacyFileUrl1 = $"data/learnenglish/{file}";
-            var legacyFileUrl2 = $"learnenglish/{file}";
+            var primaryFileUrl = $"storage/{subFolder}/{file}";
+            var legacyFileUrl1 = $"data/{subFolder}/{file}";
+            var legacyFileUrl2 = $"{subFolder}/{file}";
 
             var existing = existingMatches.FirstOrDefault(c =>
                 c.FileUrl == primaryFileUrl || c.FileUrl == legacyFileUrl1 || c.FileUrl == legacyFileUrl2);
@@ -267,10 +269,13 @@ using (var scope = app.Services.CreateScope())
 
     // Sync Vocabulary from words.json (CategoryId = 1)
     var seedStorageFolder = Path.Combine(builder.Environment.ContentRootPath, "Storage");
-    await SyncLearningContentsFromJsonAsync(db, seedStorageFolder, 1, "words.json");
+    await SyncLearningContentsFromJsonAsync(db, seedStorageFolder, "learnenglish", 1, "words.json");
 
     // Sync Sentences from sentences.json (CategoryId = 2)
-    await SyncLearningContentsFromJsonAsync(db, seedStorageFolder, 2, "sentences.json");
+    await SyncLearningContentsFromJsonAsync(db, seedStorageFolder, "learnenglish", 2, "sentences.json");
+
+    // Sync Knowledge Bank from data.json (CategoryId = 6)
+    await SyncLearningContentsFromJsonAsync(db, seedStorageFolder, "knowledge-exercises", 6, "data.json");
 }
 
 // Configure the HTTP request pipeline.

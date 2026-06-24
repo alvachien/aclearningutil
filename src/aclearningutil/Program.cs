@@ -310,21 +310,8 @@ app.UseStaticFiles(new StaticFileOptions
     RequestPath = "/audio"
 });
 
-// Static files for Storage (learning data JSON files)
-var storageFolder = Path.Combine(builder.Environment.ContentRootPath, "Storage");
-if (!Directory.Exists(storageFolder))
-{
-    Directory.CreateDirectory(storageFolder);
-}
-app.UseStaticFiles(new StaticFileOptions
-{
-    OnPrepareResponse = ctx =>
-    {
-        ctx.Context.Response.Headers.Append("Cache-Control", $"public, max-age={cacheMaxAgeOneWeek}");
-    },
-    FileProvider = new PhysicalFileProvider(storageFolder),
-    RequestPath = "/storage"
-});
+// Note: Storage folder files are now served via StorageController with authentication
+// See Controllers/StorageController.cs
 
 app.UseAuthentication();
 app.UseAuthorization();

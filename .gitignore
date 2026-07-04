@@ -4,5 +4,10 @@ bin/
 obj/
 
 AudioFiles/
+Storage/
 
 *.csproj.user
+src/aclearningutil/aclearningutil.db
+src/aclearningutil/aclearningutil.db-shm
+src/aclearningutil/aclearningutil.db-wal
+

@@ -6,8 +6,10 @@ namespace aclearningutil.Controllers
     /// <summary>
     /// Controller for serving learning content files from the Storage folder.
     /// Requires authentication to access any files.
+    /// URL pattern: /api/Storage/{subfolder}/{filename}
+    /// e.g. /api/Storage/knowledge-exercises/data.json
     /// </summary>
-    [Route("api/[controller]")]
+    [Route("api/[controller]/{**filepath}")]
     [ApiController]
     [Authorize]
     public class StorageController : ControllerBase
@@ -19,7 +21,10 @@ namespace aclearningutil.Controllers
         private static readonly HashSet<string> AllowedSubfolders = new(StringComparer.OrdinalIgnoreCase)
         {
             "learnenglish",
-            "knowledge-exercises"
+            "learnchinese",
+            "knowledge-exercises",
+            "englishlistening",
+            "formula"
         };
 
         // Allowed file extensions
@@ -28,7 +33,8 @@ namespace aclearningutil.Controllers
             ".json",
             ".png",
             ".jpg",
-            ".jpeg"
+            ".jpeg",
+            ".mp3"
         };
 
         public StorageController(IWebHostEnvironment environment, ILogger<StorageController> logger)
@@ -40,31 +46,31 @@ namespace aclearningutil.Controllers
         /// <summary>
         /// Serves a file from the Storage folder.
         /// </summary>
-        /// <param name="path">Relative path within Storage (e.g., "learnenglish/cet4.json")</param>
+        /// <param name="filepath">Route-captured path in format "subfolder/filename" (e.g., "learnenglish/cet4.json")</param>
         [HttpGet]
         [ProducesResponseType(typeof(FileResult), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public IActionResult GetFile([FromQuery] string path)
+        public IActionResult GetFile(string filepath)
         {
-            if (string.IsNullOrWhiteSpace(path))
+            if (string.IsNullOrWhiteSpace(filepath))
             {
-                return BadRequest("Path parameter is required.");
+                return BadRequest("File path is required.");
             }
 
             // Normalize path and prevent directory traversal
-            var normalizedPath = path.Replace('\\', '/').Trim('/');
+            var normalizedPath = filepath.Replace('\\', '/').Trim('/');
 
             // Check for directory traversal attempts
             if (normalizedPath.Contains("..") || normalizedPath.Contains("//"))
             {
-                _logger.LogWarning("Directory traversal attempt blocked: {Path}", path);
+                _logger.LogWarning("Directory traversal attempt blocked: {Path}", filepath);
                 return BadRequest("Invalid path.");
             }
 
             // Split path into subfolder and filename
             var parts = normalizedPath.Split('/', 2);
-            if (parts.Length != 2)
+            if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
             {
                 return BadRequest("Path must be in format: subfolder/filename");
             }
@@ -85,12 +91,6 @@ namespace aclearningutil.Controllers
             {
                 _logger.LogWarning("Access attempt to disallowed file type: {Filename}", filename);
                 return BadRequest("File type not allowed.");
-            }
-
-            // Prevent filename with path separators
-            if (filename.Contains('/') || filename.Contains('\\'))
-            {
-                return BadRequest("Invalid filename.");
             }
 
             // Build full path
@@ -118,12 +118,13 @@ namespace aclearningutil.Controllers
                 ".json" => "application/json",
                 ".png" => "image/png",
                 ".jpg" or ".jpeg" => "image/jpeg",
+                ".mp3" => "audio/mpeg",
                 _ => "application/octet-stream"
             };
 
             // Return file with caching
             var fileStream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            Response.Headers.Append("Cache-Control", "public, max-age=604800"); // 1 week
+            Response.Headers.Append("Cache-Control", "public, max-age=3600"); // 1 hour
 
             return File(fileStream, contentType);
         }

@@ -74,7 +74,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll(null, null);
+        var result = await _controller.GetAll(null, null, cancellationToken: CancellationToken.None);
 
         // Assert
         var ratings = result.Value;
@@ -108,7 +108,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll(content1.Id, null);
+        var result = await _controller.GetAll(content1.Id, null, cancellationToken: CancellationToken.None);
 
         // Assert
         var ratings = result.Value;
@@ -130,7 +130,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll(null, 1);
+        var result = await _controller.GetAll(null, 1, cancellationToken: CancellationToken.None);
 
         // Assert
         var ratings = result.Value;
@@ -165,7 +165,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act - search for content1 + item 1
-        var result = await _controller.GetAll(content1.Id, 1);
+        var result = await _controller.GetAll(content1.Id, 1, cancellationToken: CancellationToken.None);
 
         // Assert
         var ratings = result.Value;
@@ -191,7 +191,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetById(rating.Id);
+        var result = await _controller.GetById(rating.Id, CancellationToken.None);
 
         // Assert
         result.Value.Should().NotBeNull();
@@ -215,7 +215,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetById(rating.Id);
+        var result = await _controller.GetById(rating.Id, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<NotFoundResult>();
@@ -233,7 +233,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Create(rating);
+        var result = await _controller.Create(rating, CancellationToken.None);
 
         // Assert
         var createdAtActionResult = result.Result as CreatedAtActionResult;
@@ -257,7 +257,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Create(rating);
+        var result = await _controller.Create(rating, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<BadRequestObjectResult>();
@@ -275,7 +275,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Create(rating);
+        var result = await _controller.Create(rating, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<BadRequestObjectResult>();
@@ -298,7 +298,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Create(rating);
+        var result = await _controller.Create(rating, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<CreatedAtActionResult>();
@@ -315,7 +315,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Create(rating);
+        var result = await _controller.Create(rating, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<BadRequestObjectResult>();
@@ -344,7 +344,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Update(rating.Id, updatedRating);
+        var result = await _controller.Update(rating.Id, updatedRating, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NoContentResult>();
@@ -374,7 +374,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Update(rating.Id, updatedRating);
+        var result = await _controller.Update(rating.Id, updatedRating, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NotFoundResult>();
@@ -402,7 +402,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Update(rating.Id, updatedRating);
+        var result = await _controller.Update(rating.Id, updatedRating, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<BadRequestObjectResult>();
@@ -424,7 +424,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.Delete(rating.Id);
+        var result = await _controller.Delete(rating.Id, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NoContentResult>();
@@ -448,7 +448,7 @@ public class UserLearningRatingsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.Delete(rating.Id);
+        var result = await _controller.Delete(rating.Id, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NotFoundResult>();

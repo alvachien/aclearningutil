@@ -1,11 +1,13 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Serilog.Events;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using aclearningutil.Data;
 using aclearningutil.Data.Entities;
 using aclearningutil.Models;
@@ -31,7 +33,7 @@ else if(builder.Environment.IsProduction())
         config.MinimumLevel.Is(LogEventLevel.Warning)
              .Enrich.FromLogContext()
              .WriteTo.File(
-                 path: "../Logs/aclearningutil/log-.txt",
+                 path: Path.Combine(builder.Environment.ContentRootPath, "..", "Logs", "aclearningutil", "log-.txt"),
                  rollingInterval: RollingInterval.Day, // �������
                  outputTemplate: outputTemplate,
                  retainedFileCountLimit: 14 // �������7����־
@@ -71,15 +73,28 @@ builder.Services.AddAuthentication("Bearer")
             : "https://www.alvachien.com/idserver";
         options.RequireHttpsMetadata = true;
         options.SaveToken = true;
-        options.IncludeErrorDetails = true;
+        options.IncludeErrorDetails = builder.Environment.IsDevelopment();
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            ValidateAudience = false
+            ValidateAudience = true,
+            ValidAudience = "api.knowledgebuilder"
         };
     });
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+// Rate limiting for LLM/TTS endpoints (prevents unbounded external API spend)
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("LLMAndTTS", limiterOptions =>
+    {
+        limiterOptions.PermitLimit = 30;
+        limiterOptions.Window = TimeSpan.FromMinutes(1);
+        limiterOptions.QueueLimit = 5;
+        limiterOptions.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+});
 // Database - SQLite
 var dbPath = Path.Combine(builder.Environment.ContentRootPath, "aclearningutil.db");
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -93,26 +108,37 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
 
-    // Seed LearningContentCategories
+    // Seed LearningContentCategories (use INSERT OR IGNORE semantics for idempotent startup)
     var categories = new (int Id, string NameChinese, string NameEnglish)[]
     {
         (1, "词汇", "Vocabulary"),
         (2, "句子", "Sentence"),
+        (3, "听力", "Listening"),
+        (4, "中文", "Chinese"),
         (6, "知识库", "Knowledge Bank"),
     };
     foreach (var (id, nameCn, nameEn) in categories)
     {
-        if (!await db.LearningContentCategories.AnyAsync(c => c.Id == id))
+        var exists = await db.LearningContentCategories.AnyAsync(c => c.Id == id);
+        if (!exists)
         {
-            db.LearningContentCategories.Add(new LearningContentCategory
+            try
             {
-                Id = id,
-                NameChinese = nameCn,
-                NameEnglish = nameEn,
-            });
+                db.LearningContentCategories.Add(new LearningContentCategory
+                {
+                    Id = id,
+                    NameChinese = nameCn,
+                    NameEnglish = nameEn,
+                });
+                await db.SaveChangesAsync();
+            }
+            catch (Microsoft.Data.Sqlite.SqliteException)
+            {
+                // Concurrent start — another instance already seeded this category. Safe to ignore.
+                db.ChangeTracker.Clear();
+            }
         }
     }
-    await db.SaveChangesAsync();
 
     // Migrate data from tts_map.json if it exists
     var audioFolder = Path.Combine(builder.Environment.ContentRootPath, "AudioFiles");
@@ -146,33 +172,33 @@ using (var scope = app.Services.CreateScope())
                 if (migratedCount > 0)
                 {
                     await db.SaveChangesAsync();
-                    Console.WriteLine($"Migrated {migratedCount} TTS mappings from JSON to database.");
+                    Log.Information("Migrated {Count} TTS mappings from JSON to database.", migratedCount);
                 }
                 else
                 {
-                    Console.WriteLine("All TTS mappings already exist in database.");
+                    Log.Information("All TTS mappings already exist in database.");
                 }
             }
 
             // Rename the JSON file to indicate migration is complete
             var backupFile = Path.Combine(audioFolder, "tts_map.json.migrated");
             File.Move(jsonFile, backupFile, overwrite: true);
-            Console.WriteLine($"Backed up {jsonFile} to {backupFile}");
+            Log.Information("Backed up {SourceFile} to {BackupFile}.", jsonFile, backupFile);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error migrating tts_map.json: {ex.Message}");
+            Log.Warning(ex, "Error migrating tts_map.json.");
         }
     }
 
     // Dynamically sync LearningContents from JSON index files
     // Supports different subfolders (e.g., "learnenglish" for vocabulary/sentences, "knowledge-exercises" for knowledge bank)
-    static async Task SyncLearningContentsFromJsonAsync(AppDbContext db, string storageFolder, string subFolder, int categoryId, string jsonFileName)
+    static async Task SyncLearningContentsFromJsonAsync(AppDbContext db, Microsoft.Extensions.Logging.ILogger logger, string storageFolder, string subFolder, int categoryId, string jsonFileName)
     {
         var jsonFilePath = Path.Combine(storageFolder, subFolder, jsonFileName);
         if (!File.Exists(jsonFilePath))
         {
-            Console.WriteLine($"Index file not found: {jsonFilePath}, skipping sync for category {categoryId}.");
+            logger.LogWarning("Index file not found: {JsonFilePath}, skipping sync for category {CategoryId}.", jsonFilePath, categoryId);
             return;
         }
 
@@ -181,7 +207,7 @@ using (var scope = app.Services.CreateScope())
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         if (jsonEntries == null || jsonEntries.Length == 0)
         {
-            Console.WriteLine($"No entries found in {jsonFileName}, skipping sync.");
+            logger.LogWarning("No entries found in {JsonFileName}, skipping sync.", jsonFileName);
             return;
         }
 
@@ -189,10 +215,22 @@ using (var scope = app.Services.CreateScope())
         var jsonFileUrls = new HashSet<string>();
         foreach (var entry in jsonEntries)
         {
-            var file = entry.GetProperty("file").GetString()!;
-            jsonFileUrls.Add($"storage/{subFolder}/{file}");
-            jsonFileUrls.Add($"data/{subFolder}/{file}");
-            jsonFileUrls.Add($"{subFolder}/{file}");
+            try
+            {
+                if (!entry.TryGetProperty("file", out var fileProp) || fileProp.ValueKind != JsonValueKind.String)
+                {
+                    logger.LogWarning("Skipping entry with missing or invalid 'file' property in {JsonFileName}.", jsonFileName);
+                    continue;
+                }
+                var file = fileProp.GetString()!;
+                jsonFileUrls.Add($"storage/{subFolder}/{file}");
+                jsonFileUrls.Add($"data/{subFolder}/{file}");
+                jsonFileUrls.Add($"{subFolder}/{file}");
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error processing entry in {JsonFileName}.", jsonFileName);
+            }
         }
 
         // Pre-load existing DB records matching any of the known FileUrl patterns
@@ -203,79 +241,110 @@ using (var scope = app.Services.CreateScope())
         var addCount = 0;
         foreach (var entry in jsonEntries)
         {
-            var name = entry.GetProperty("name").GetString()!;
-            var file = entry.GetProperty("file").GetString()!;
-            var primaryFileUrl = $"storage/{subFolder}/{file}";
-            var legacyFileUrl1 = $"data/{subFolder}/{file}";
-            var legacyFileUrl2 = $"{subFolder}/{file}";
-
-            var existing = existingMatches.FirstOrDefault(c =>
-                c.FileUrl == primaryFileUrl || c.FileUrl == legacyFileUrl1 || c.FileUrl == legacyFileUrl2);
-
-            if (existing != null)
+            try
             {
-                // Migrate FileUrl to current pattern if needed
-                if (existing.FileUrl != primaryFileUrl)
+                // Accept either "name" (standard) or "book" (legacy, used by englishlistening)
+                string? name = null;
+                if (entry.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String)
                 {
-                    existing.FileUrl = primaryFileUrl;
+                    name = nameProp.GetString();
                 }
-                // Update name if changed
-                if (existing.NameChinese != name || existing.NameEnglish != name)
+                else if (entry.TryGetProperty("book", out var bookProp) && bookProp.ValueKind == JsonValueKind.String)
                 {
-                    existing.NameChinese = name;
-                    existing.NameEnglish = name;
-                    existing.UpdatedAt = DateTime.UtcNow;
+                    name = bookProp.GetString();
+                }
+
+                if (!entry.TryGetProperty("file", out var fileProp) || fileProp.ValueKind != JsonValueKind.String)
+                {
+                    logger.LogWarning("Skipping entry with missing or invalid 'file' property in {JsonFileName}.", jsonFileName);
+                    continue;
+                }
+                var file = fileProp.GetString()!;
+
+                if (string.IsNullOrEmpty(name))
+                {
+                    logger.LogWarning("Skipping entry with no 'name' or 'book' property in {JsonFileName}.", jsonFileName);
+                    continue;
+                }
+
+                var primaryFileUrl = $"storage/{subFolder}/{file}";
+                var legacyFileUrl1 = $"data/{subFolder}/{file}";
+                var legacyFileUrl2 = $"{subFolder}/{file}";
+
+                var existing = existingMatches.FirstOrDefault(c =>
+                    c.FileUrl == primaryFileUrl || c.FileUrl == legacyFileUrl1 || c.FileUrl == legacyFileUrl2);
+
+                if (existing != null)
+                {
+                    // Migrate FileUrl to current pattern if needed
+                    if (existing.FileUrl != primaryFileUrl)
+                    {
+                        existing.FileUrl = primaryFileUrl;
+                    }
+                    // Update name if changed
+                    if (existing.NameChinese != name || existing.NameEnglish != name)
+                    {
+                        existing.NameChinese = name;
+                        existing.NameEnglish = name;
+                        existing.UpdatedAt = DateTime.UtcNow;
+                    }
+                }
+                else
+                {
+                    db.LearningContents.Add(new LearningContent
+                    {
+                        CategoryId = categoryId,
+                        NameChinese = name,
+                        NameEnglish = name,
+                        FileUrl = primaryFileUrl,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow,
+                    });
+                    addCount++;
                 }
             }
-            else
+            catch (Exception ex)
             {
-                db.LearningContents.Add(new LearningContent
-                {
-                    CategoryId = categoryId,
-                    NameChinese = name,
-                    NameEnglish = name,
-                    FileUrl = primaryFileUrl,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
-                });
-                addCount++;
+                logger.LogWarning(ex, "Error processing entry in {JsonFileName}.", jsonFileName);
             }
         }
 
         if (addCount > 0)
         {
             await db.SaveChangesAsync();
-            Console.WriteLine($"Added {addCount} content items for category {categoryId} from {jsonFileName}.");
+            logger.LogInformation("Added {Count} content items for category {CategoryId} from {JsonFileName}.", addCount, categoryId, jsonFileName);
         }
 
-        // Delete DB records not present in JSON (also clean up dependent learning histories and ratings)
-        var toDelete = existingMatches.Where(c => !jsonFileUrls.Contains(c.FileUrl)).ToList();
-        if (toDelete.Count > 0)
+        // Log DB records that exist in DB but not in JSON (instead of hard-deleting, to protect user data)
+        var orphaned = existingMatches.Where(c => !jsonFileUrls.Contains(c.FileUrl)).ToList();
+        if (orphaned.Count > 0)
         {
-            foreach (var content in toDelete)
-            {
-                var histories = await db.UserLearningHistories.Where(h => h.ContentId == content.Id).ToListAsync();
-                if (histories.Count > 0) db.UserLearningHistories.RemoveRange(histories);
-
-                var ratings = await db.UserLearningRatings.Where(r => r.ContentId == content.Id).ToListAsync();
-                if (ratings.Count > 0) db.UserLearningRatings.RemoveRange(ratings);
-
-                db.LearningContents.Remove(content);
-            }
-            await db.SaveChangesAsync();
-            Console.WriteLine($"Removed {toDelete.Count} content items for category {categoryId} no longer in {jsonFileName}.");
+            logger.LogWarning(
+                "Found {Count} content items for category {CategoryId} in DB but not in {JsonFileName}: {Titles}. " +
+                "These are NOT deleted to protect user learning histories and ratings. " +
+                "Remove them manually if needed.",
+                orphaned.Count, categoryId, jsonFileName,
+                string.Join(", ", orphaned.Select(c => c.NameEnglish)));
         }
     }
 
     // Sync Vocabulary from words.json (CategoryId = 1)
     var seedStorageFolder = Path.Combine(builder.Environment.ContentRootPath, "Storage");
-    await SyncLearningContentsFromJsonAsync(db, seedStorageFolder, "learnenglish", 1, "words.json");
+    var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+    var syncLogger = loggerFactory.CreateLogger("SyncLearningContents");
+    await SyncLearningContentsFromJsonAsync(db, syncLogger, seedStorageFolder, "learnenglish", 1, "words.json");
 
     // Sync Sentences from sentences.json (CategoryId = 2)
-    await SyncLearningContentsFromJsonAsync(db, seedStorageFolder, "learnenglish", 2, "sentences.json");
+    await SyncLearningContentsFromJsonAsync(db, syncLogger, seedStorageFolder, "learnenglish", 2, "sentences.json");
 
     // Sync Knowledge Bank from data.json (CategoryId = 6)
-    await SyncLearningContentsFromJsonAsync(db, seedStorageFolder, "knowledge-exercises", 6, "data.json");
+    await SyncLearningContentsFromJsonAsync(db, syncLogger, seedStorageFolder, "knowledge-exercises", 6, "data.json");
+
+    // Sync Chinese from data.json (CategoryId = 4)
+    await SyncLearningContentsFromJsonAsync(db, syncLogger, seedStorageFolder, "learnchinese", 4, "data.json");
+
+    // Sync Listening from data.json (CategoryId = 3)
+    await SyncLearningContentsFromJsonAsync(db, syncLogger, seedStorageFolder, "englishlistening", 3, "data.json");
 }
 
 // Configure the HTTP request pipeline.
@@ -310,11 +379,13 @@ app.UseStaticFiles(new StaticFileOptions
     RequestPath = "/audio"
 });
 
-// Note: Storage folder files are now served via StorageController with authentication
+// Storage folder files are served via StorageController with route-based URL:
+// GET /api/Storage/{subfolder}/{filename} (e.g., /api/Storage/knowledge-exercises/data.json)
 // See Controllers/StorageController.cs
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 app.MapControllers();
 

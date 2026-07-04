@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using aclearningutil.Models;
 using aclearningutil.Util;
 
@@ -11,9 +12,11 @@ namespace aclearningutil.Controllers
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]
+    [EnableRateLimiting("LLMAndTTS")]
     public class FormatLLMController : ControllerBase
     {
-        private readonly LLMConversation conv = new();
+        private const int MaxContextLength = 10000;
+
         private readonly IConfiguration Configuration;
         private readonly ILogger<FormatLLMController> _logger;
 
@@ -21,50 +24,51 @@ namespace aclearningutil.Controllers
         {
             Configuration = configuration;
             _logger = logger;
-            // Default LLM
-            conv.model = LLMUtil.deepseekModelName;
         }
 
         [Route("[action]")]
         [HttpPost]
-        public async Task<ActionResult<LLMReplyContent>> AskAnything([FromBody] FormatLLMInput input)
+        public async Task<ActionResult<LLMReplyContent>> AskAnything([FromBody] FormatLLMInput input, CancellationToken cancellationToken)
         {
             if (String.IsNullOrEmpty(input.Context))
             {
                 _logger.LogWarning("Context is empty for get LLM reply");
                 return new ContentResult
                 {
-                    StatusCode = (int)HttpStatusCode.InternalServerError,
+                    StatusCode = (int)HttpStatusCode.BadRequest,
                     Content = "Context is mandatory.",
                     ContentType = "text/plain"
                 };
             }
 
-            string initcontent = string.Empty;
-            if (input.FormatType == "math")
+            if (input.Context.Length > MaxContextLength)
             {
-                initcontent = "你是经验丰富的数学老师。";
+                return new ContentResult
+                {
+                    StatusCode = (int)HttpStatusCode.BadRequest,
+                    Content = $"Context is too long (max {MaxContextLength} characters).",
+                    ContentType = "text/plain"
+                };
             }
-            else if(input.FormatType == "physics")
+
+            string initcontent = input.FormatType switch
             {
-                initcontent = "你是经验丰富的物理老师。";
-            }
-            else if(input.FormatType == "chemistry")
+                "math" => "你是经验丰富的数学老师。",
+                "physics" => "你是经验丰富的物理老师。",
+                "chemistry" => "你是经验丰富的化学老师。",
+                _ => string.Empty
+            };
+
+            if (string.IsNullOrEmpty(initcontent))
             {
-                initcontent = "你是经验丰富的化学老师。";
+                return BadRequest("FormatType must be 'math', 'physics', or 'chemistry'.");
             }
+
+            var conv = new LLMConversation { model = LLMUtil.deepseekModelName };
             List<LLMConversationMessage> tmpmsgs =
             [
-                new LLMConversationMessage()
-                {
-                    role = "system",
-                    content = initcontent
-                },
-                new LLMConversationMessage()
-                {
-                    role = "user",
-                    content = input.Context
-                },
+                new() { role = "system", content = initcontent },
+                new() { role = "user", content = input.Context },
             ];
             conv.messages = [.. tmpmsgs];
             var jsonContent = JsonSerializer.Serialize(conv);
@@ -73,33 +77,32 @@ namespace aclearningutil.Controllers
             var apiKey = Configuration["DeepSeek:APIKey"];
             if (String.IsNullOrEmpty(apiKey))
             {
-                _logger.LogError("Failed to get API key");
-            }
-            else
-            {
-                string result = await LLMUtil.SendPostRequestAsync(LLMUtil.deepseekAPIUrl, jsonContent, apiKey);
-                if (!result.StartsWith("ERROR: "))
+                _logger.LogError("DeepSeek API key is not configured.");
+                return new ContentResult
                 {
-                    JsonObject? jsonresult = JsonObject.Parse(result)?.AsObject();
-                    var rstmsg = jsonresult?["choices"]?[0]?["message"];
-                    //listMessages.Add(new LLMConversationMessage()
-                    //{
-                    //    role = (string)rstmsg["role"],
-                    //    content = (string)rstmsg["content"]
-                    //});
-
-                    // 输出结果
-                    return new LLMReplyContent()
-                    {
-                        Content = rstmsg?["content"]?.GetValue<string>() ?? string.Empty
-                    };
-                }
+                    StatusCode = (int)HttpStatusCode.InternalServerError,
+                    Content = "LLM service is not configured.",
+                    ContentType = "text/plain"
+                };
             }
 
+            string result = await LLMUtil.SendPostRequestAsync(LLMUtil.deepseekAPIUrl, jsonContent, apiKey, cancellationToken);
+            if (!result.StartsWith("ERROR: ", StringComparison.Ordinal))
+            {
+                JsonObject? jsonresult = JsonObject.Parse(result)?.AsObject();
+                var rstmsg = jsonresult?["choices"]?[0]?["message"];
+
+                return new LLMReplyContent()
+                {
+                    Content = rstmsg?["content"]?.GetValue<string>() ?? string.Empty
+                };
+            }
+
+            _logger.LogWarning("LLM call failed: {Result}", result);
             return new ContentResult
             {
-                StatusCode = (int)HttpStatusCode.BadRequest,
-                Content = "No returns from LLM.",
+                StatusCode = (int)HttpStatusCode.BadGateway,
+                Content = "LLM service returned an error.",
                 ContentType = "text/plain"
             };
         }

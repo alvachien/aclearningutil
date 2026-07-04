@@ -74,7 +74,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll(null, null);
+        var result = await _controller.GetAll(null, null, cancellationToken: CancellationToken.None);
 
         // Assert
         var histories = result.Value;
@@ -108,7 +108,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll(content1.Id, null);
+        var result = await _controller.GetAll(content1.Id, null, cancellationToken: CancellationToken.None);
 
         // Assert
         var histories = result.Value;
@@ -130,7 +130,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll(null, 1);
+        var result = await _controller.GetAll(null, 1, cancellationToken: CancellationToken.None);
 
         // Assert
         var histories = result.Value;
@@ -165,7 +165,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act - search for content1 + item 1
-        var result = await _controller.GetAll(content1.Id, 1);
+        var result = await _controller.GetAll(content1.Id, 1, cancellationToken: CancellationToken.None);
 
         // Assert
         var histories = result.Value;
@@ -191,7 +191,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetById(history.Id);
+        var result = await _controller.GetById(history.Id, CancellationToken.None);
 
         // Assert
         result.Value.Should().NotBeNull();
@@ -215,7 +215,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetById(history.Id);
+        var result = await _controller.GetById(history.Id, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<NotFoundResult>();
@@ -233,7 +233,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Create(history);
+        var result = await _controller.Create(history, CancellationToken.None);
 
         // Assert
         var createdAtActionResult = result.Result as CreatedAtActionResult;
@@ -255,7 +255,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Create(history);
+        var result = await _controller.Create(history, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<BadRequestObjectResult>();
@@ -284,7 +284,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Update(history.Id, updatedHistory);
+        var result = await _controller.Update(history.Id, updatedHistory, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NoContentResult>();
@@ -314,7 +314,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         };
 
         // Act
-        var result = await _controller.Update(history.Id, updatedHistory);
+        var result = await _controller.Update(history.Id, updatedHistory, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NotFoundResult>();
@@ -336,7 +336,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.Delete(history.Id);
+        var result = await _controller.Delete(history.Id, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NoContentResult>();
@@ -360,7 +360,7 @@ public class UserLearningHistoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.Delete(history.Id);
+        var result = await _controller.Delete(history.Id, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NotFoundResult>();

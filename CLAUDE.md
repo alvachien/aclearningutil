@@ -223,7 +223,7 @@ dotnet user-secrets set "DeepSeek:APIKey" "your-key"
 
 ### CORS
 Configured in `Program.cs`. Currently allows:
-- Development: `http://localhost:4200`
+- Development: `http://localhost:4200`, `http://localhost:29800`
 - Production: `https://www.alvachien.com`
 
 ## External Dependencies
@@ -242,6 +242,7 @@ Configured in `Program.cs`. Currently allows:
 - Development: `https://localhost:7228`
 - Production: `https://www.alvachien.com/idserver`
 - Validates JWT tokens for all endpoints except `LearningContentCategoriesController` (public, no auth)
+- Audience: `api.knowledgebuilder` (validated in `Program.cs`)
 - UserId for user-scoped controllers is extracted from JWT via `ClaimTypes.NameIdentifier` (with `"sub"` fallback)
 
 ## Solution Structure

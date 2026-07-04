@@ -20,19 +20,19 @@ namespace aclearningutil.Controllers
 
         // GET: api/LearningContentCategories
         [HttpGet]
-        public async Task<ActionResult<List<LearningContentCategory>>> GetAll()
+        public async Task<ActionResult<List<LearningContentCategory>>> GetAll(CancellationToken cancellationToken)
         {
             var categories = await _dbContext.LearningContentCategories
                 .OrderBy(c => c.Id)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
             return categories;
         }
 
         // GET: api/LearningContentCategories/5
         [HttpGet("{id}")]
-        public async Task<ActionResult<LearningContentCategory>> GetById(int id)
+        public async Task<ActionResult<LearningContentCategory>> GetById(int id, CancellationToken cancellationToken)
         {
-            var category = await _dbContext.LearningContentCategories.FindAsync(id);
+            var category = await _dbContext.LearningContentCategories.FindAsync(id, cancellationToken);
             if (category == null)
             {
                 return NotFound();

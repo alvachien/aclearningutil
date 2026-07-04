@@ -37,7 +37,7 @@ public class LearningContentCategoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll();
+        var result = await _controller.GetAll(CancellationToken.None);
 
         // Assert - 6 seed + 2 test = 8
         var categories = result.Value;
@@ -55,7 +55,7 @@ public class LearningContentCategoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll();
+        var result = await _controller.GetAll(CancellationToken.None);
 
         // Assert - verify ordering
         var categories = result.Value;
@@ -70,7 +70,7 @@ public class LearningContentCategoriesControllerTests : IDisposable
     public async Task GetById_Existing_Seed_Category_Returns_Category()
     {
         // Act - use seed data category (ID 1 = 词汇/Vocabulary)
-        var result = await _controller.GetById(1);
+        var result = await _controller.GetById(1, CancellationToken.None);
 
         // Assert
         result.Value.Should().NotBeNull();
@@ -87,7 +87,7 @@ public class LearningContentCategoriesControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetById(100);
+        var result = await _controller.GetById(100, CancellationToken.None);
 
         // Assert
         result.Value.Should().NotBeNull();
@@ -99,7 +99,7 @@ public class LearningContentCategoriesControllerTests : IDisposable
     public async Task GetById_NonExisting_Category_Returns_NotFound()
     {
         // Act
-        var result = await _controller.GetById(999);
+        var result = await _controller.GetById(999, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<NotFoundResult>();

@@ -28,9 +28,9 @@ namespace aclearningutil.Controllers
                 ?? string.Empty;
         }
 
-        // GET: api/UserLearningHistories?contentId=1&itemId=5
+        // GET: api/UserLearningHistories?contentId=1&itemId=5&page=1&pageSize=50
         [HttpGet]
-        public async Task<ActionResult<List<UserLearningHistory>>> GetAll([FromQuery] int? contentId, [FromQuery] int? itemId)
+        public async Task<ActionResult<List<UserLearningHistory>>> GetAll([FromQuery] int? contentId = null, [FromQuery] int? itemId = null, [FromQuery] int? page = null, [FromQuery] int? pageSize = null, CancellationToken cancellationToken = default)
         {
             var userId = GetUserId();
             if (string.IsNullOrEmpty(userId))
@@ -52,12 +52,17 @@ namespace aclearningutil.Controllers
                 query = query.Where(h => h.ItemId == itemId.Value);
             }
 
-            var histories = await query.OrderByDescending(h => h.LearnDate).ToListAsync();
+            // Apply pagination
+            const int maxPageSize = 200;
+            var skip = ((page ?? 1) - 1) * Math.Clamp(pageSize ?? 50, 1, maxPageSize);
+            var take = Math.Clamp(pageSize ?? 50, 1, maxPageSize);
+
+            var histories = await query.OrderByDescending(h => h.LearnDate).Skip(skip).Take(take).ToListAsync(cancellationToken);
             return histories;
         }
 
         [HttpGet("{id}")]
-        public async Task<ActionResult<UserLearningHistory>> GetById(int id)
+        public async Task<ActionResult<UserLearningHistory>> GetById(int id, CancellationToken cancellationToken)
         {
             var userId = GetUserId();
             if (string.IsNullOrEmpty(userId))
@@ -67,7 +72,7 @@ namespace aclearningutil.Controllers
 
             var history = await _dbContext.UserLearningHistories
                 .Include(h => h.Content)
-                .FirstOrDefaultAsync(h => h.Id == id && h.UserId == userId);
+                .FirstOrDefaultAsync(h => h.Id == id && h.UserId == userId, cancellationToken);
 
             if (history == null)
             {
@@ -77,7 +82,7 @@ namespace aclearningutil.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult<UserLearningHistory>> Create([FromBody] UserLearningHistory history)
+        public async Task<ActionResult<UserLearningHistory>> Create([FromBody] UserLearningHistory history, CancellationToken cancellationToken)
         {
             var userId = GetUserId();
             if (string.IsNullOrEmpty(userId))
@@ -85,7 +90,7 @@ namespace aclearningutil.Controllers
                 return Unauthorized("User ID not found in token.");
             }
 
-            var contentExists = await _dbContext.LearningContents.AnyAsync(c => c.Id == history.ContentId);
+            var contentExists = await _dbContext.LearningContents.AnyAsync(c => c.Id == history.ContentId, cancellationToken);
             if (!contentExists)
             {
                 return BadRequest("ContentId does not exist.");
@@ -98,12 +103,12 @@ namespace aclearningutil.Controllers
             }
 
             _dbContext.UserLearningHistories.Add(history);
-            await _dbContext.SaveChangesAsync();
+            await _dbContext.SaveChangesAsync(cancellationToken);
             return CreatedAtAction(nameof(GetById), new { id = history.Id }, history);
         }
 
         [HttpPut("{id}")]
-        public async Task<IActionResult> Update(int id, [FromBody] UserLearningHistory history)
+        public async Task<IActionResult> Update(int id, [FromBody] UserLearningHistory history, CancellationToken cancellationToken)
         {
             var userId = GetUserId();
             if (string.IsNullOrEmpty(userId))
@@ -112,13 +117,13 @@ namespace aclearningutil.Controllers
             }
 
             var existing = await _dbContext.UserLearningHistories
-                .FirstOrDefaultAsync(h => h.Id == id && h.UserId == userId);
+                .FirstOrDefaultAsync(h => h.Id == id && h.UserId == userId, cancellationToken);
             if (existing == null)
             {
                 return NotFound();
             }
 
-            var contentExists = await _dbContext.LearningContents.AnyAsync(c => c.Id == history.ContentId);
+            var contentExists = await _dbContext.LearningContents.AnyAsync(c => c.Id == history.ContentId, cancellationToken);
             if (!contentExists)
             {
                 return BadRequest("ContentId does not exist.");
@@ -128,12 +133,12 @@ namespace aclearningutil.Controllers
             existing.ItemId = history.ItemId;
             existing.LearnDate = history.LearnDate;
             existing.SuccessIndicator = history.SuccessIndicator;
-            await _dbContext.SaveChangesAsync();
+            await _dbContext.SaveChangesAsync(cancellationToken);
             return NoContent();
         }
 
         [HttpDelete("{id}")]
-        public async Task<IActionResult> Delete(int id)
+        public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
         {
             var userId = GetUserId();
             if (string.IsNullOrEmpty(userId))
@@ -142,14 +147,14 @@ namespace aclearningutil.Controllers
             }
 
             var history = await _dbContext.UserLearningHistories
-                .FirstOrDefaultAsync(h => h.Id == id && h.UserId == userId);
+                .FirstOrDefaultAsync(h => h.Id == id && h.UserId == userId, cancellationToken);
             if (history == null)
             {
                 return NotFound();
             }
 
             _dbContext.UserLearningHistories.Remove(history);
-            await _dbContext.SaveChangesAsync();
+            await _dbContext.SaveChangesAsync(cancellationToken);
             return NoContent();
         }
     }

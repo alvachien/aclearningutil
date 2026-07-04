@@ -213,13 +213,101 @@ Categories are system-owned and seeded with 6 defaults. No create/update/delete 
 
 #### User Learning Ratings
 
-- `GET /api/userlearningratings` — List current user's ratings (optional `?contentId=` and `?itemId=` filters)
-- `GET /api/userlearningratings/{id}` — Get rating by ID
-- `POST /api/userlearningratings` — Create rating (validates 1-5)
-- `PUT /api/userlearningratings/{id}` — Update rating
-- `DELETE /api/userlearningratings/{id}` — Delete rating
+All endpoints require JWT Bearer authentication. The `UserId` is extracted from the token (`ClaimTypes.NameIdentifier`, with `sub` as fallback); every query is scoped to the current user — you cannot read, update, or delete another user's ratings. Requests without a valid user ID return `401 Unauthorized`.
 
-**Search example**: `GET /api/userlearningratings?contentId=1&itemId=5` returns the rating for the current user on content 1, item 5.
+**Entity**: `UserLearningRating` — one row per rating. Fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | int | DB primary key (auto-increment). Assigned by SQLite on `POST`; addresses the row in `GET /{id}`, `PUT /{id}`, `DELETE /{id}`. |
+| `userId` | string | Ignored on input — server overwrites from JWT. |
+| `contentId` | int | FK to `LearningContents.Id`. Which learning content is being rated. |
+| `itemId` | int? | Optional. Which specific item *within* the content is being rated. `null` = rating for the whole content. |
+| `scoreDate` | date | When the rating was given. Defaults to today if omitted on `POST`. |
+| `rating` | byte | Rating value, 1–5 inclusive. |
+
+The response also includes an eagerly-loaded `content` object (the full `LearningContent` the FK points to), to save a second round-trip.
+
+##### `GET /api/userlearningratings`
+
+List the current user's ratings.
+
+**Query parameters:**
+- `contentId` (int, optional): only return ratings for this content.
+- `itemId` (int, optional): only return ratings for this item within the content. Ignored if `contentId` is not supplied.
+
+Both filters are optional and AND-composed. With no query string, returns every rating the user has ever given (most recent first).
+
+**Example**: `GET /api/userlearningratings?contentId=7` → all of the caller's ratings for content 7.
+
+##### `GET /api/userlearningratings/{id}`
+
+Fetch a single rating by its DB primary key.
+
+**Path parameter:**
+- `id` (int, required): the `Id` column of the `UserLearningRatings` row.
+
+**Behavior**:
+- `200 OK` + the rating (with nested `content`) if the row exists and belongs to the caller.
+- `404 Not Found` if the row does not exist *or* exists but belongs to a different user. Returning `404` for both cases prevents enumerating other users' rating IDs.
+- `401 Unauthorized` if the JWT has no user ID.
+
+**Note**: you do **not** need to pass `contentId` to this endpoint — the rating row already carries its own `contentId` column, and the nested `content` object is loaded automatically via the FK.
+
+##### `POST /api/userlearningratings`
+
+Create a new rating.
+
+**Request body:**
+```json
+{
+  "contentId": 7,
+  "itemId": 3,
+  "rating": 4,
+  "scoreDate": "2026-06-20"
+}
+```
+
+- `contentId` (int, required): must reference an existing `LearningContent`. `400` otherwise.
+- `itemId` (int, optional): `null` / omitted = whole-content rating.
+- `rating` (int, required): must be between 1 and 5 inclusive. `400` otherwise.
+- `scoreDate` (date, optional): defaults to today.
+- `userId` is **ignored** if supplied — the server sets it from the JWT.
+
+**Response**: `201 Created` with the new row (including the DB-assigned `id`) and a `Location` header pointing at `/api/userlearningratings/{id}`.
+
+##### `PUT /api/userlearningratings/{id}`
+
+Update an existing rating.
+
+**Path parameter:**
+- `id` (int, required): the DB primary key of the rating to update.
+
+**Request body:** same shape as `POST`.
+
+**Behavior**:
+- `204 No Content` on success.
+- `404 Not Found` if the row does not exist *or* belongs to a different user.
+- `400 Bad Request` if `rating` is outside 1–5 or `contentId` does not exist.
+
+##### `DELETE /api/userlearningratings/{id}`
+
+Delete an existing rating.
+
+**Path parameter:**
+- `id` (int, required): the DB primary key of the rating to delete.
+
+**Behavior**:
+- `204 No Content` on success.
+- `404 Not Found` if the row does not exist *or* belongs to a different user.
+
+##### Client-side upsert pattern
+
+The Angular client (`alvachien.com`) implements create-or-update without a dedicated server endpoint:
+
+1. `GET /api/userlearningratings?contentId=X&itemId=Y`
+2. If a row is returned → `PUT /{id}` with the new rating value.
+3. Otherwise → `POST` a new row.
 
 ## Authentication
 

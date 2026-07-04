@@ -38,13 +38,13 @@ public class LearningContentsControllerTests : IDisposable
         // Arrange
         await SeedCategoryAsync();
         _context.LearningContents.AddRange(
-            new LearningContent { CategoryId = 100, NameChinese = "内容1", NameEnglish = "Content1", FileUrl = "url1", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow },
-            new LearningContent { CategoryId = 100, NameChinese = "内容2", NameEnglish = "Content2", FileUrl = "url2", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
+            new LearningContent { CategoryId = 100, NameChinese = "内容1", NameEnglish = "Content1", FileUrl = "storage/test/url1", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow },
+            new LearningContent { CategoryId = 100, NameChinese = "内容2", NameEnglish = "Content2", FileUrl = "storage/test/url2", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
         );
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll(null);
+        var result = await _controller.GetAll(cancellationToken: CancellationToken.None);
 
         // Assert
         var contents = result.Value;
@@ -62,13 +62,13 @@ public class LearningContentsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         _context.LearningContents.AddRange(
-            new LearningContent { CategoryId = 100, NameChinese = "内容1", NameEnglish = "Content1", FileUrl = "url1", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow },
-            new LearningContent { CategoryId = 101, NameChinese = "内容2", NameEnglish = "Content2", FileUrl = "url2", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
+            new LearningContent { CategoryId = 100, NameChinese = "内容1", NameEnglish = "Content1", FileUrl = "storage/test/url1", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow },
+            new LearningContent { CategoryId = 101, NameChinese = "内容2", NameEnglish = "Content2", FileUrl = "storage/test/url2", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
         );
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetAll(100);
+        var result = await _controller.GetAll(categoryId: 100, cancellationToken: CancellationToken.None);
 
         // Assert
         var contents = result.Value;
@@ -87,7 +87,7 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 100,
             NameChinese = "测试内容",
             NameEnglish = "Test Content",
-            FileUrl = "url",
+            FileUrl = "storage/test/url",
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -95,7 +95,7 @@ public class LearningContentsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetById(content.Id);
+        var result = await _controller.GetById(content.Id, CancellationToken.None);
 
         // Assert
         result.Value.Should().NotBeNull();
@@ -107,7 +107,7 @@ public class LearningContentsControllerTests : IDisposable
     public async Task GetById_NonExisting_Content_Returns_NotFound()
     {
         // Act
-        var result = await _controller.GetById(999);
+        var result = await _controller.GetById(999, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<NotFoundResult>();
@@ -123,11 +123,11 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 100,
             NameChinese = "新内容",
             NameEnglish = "New Content",
-            FileUrl = "url"
+            FileUrl = "storage/test/url"
         };
 
         // Act
-        var result = await _controller.Create(content);
+        var result = await _controller.Create(content, CancellationToken.None);
 
         // Assert
         var createdAtActionResult = result.Result as CreatedAtActionResult;
@@ -148,11 +148,11 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 100,
             NameChinese = "",
             NameEnglish = "Test",
-            FileUrl = "url"
+            FileUrl = "storage/test/url"
         };
 
         // Act
-        var result = await _controller.Create(content);
+        var result = await _controller.Create(content, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<BadRequestObjectResult>();
@@ -167,11 +167,31 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 999,
             NameChinese = "测试",
             NameEnglish = "Test",
-            FileUrl = "url"
+            FileUrl = "storage/test/url"
         };
 
         // Act
-        var result = await _controller.Create(content);
+        var result = await _controller.Create(content, CancellationToken.None);
+
+        // Assert
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    [Fact]
+    public async Task Create_Invalid_FileUrl_Returns_BadRequest()
+    {
+        // Arrange
+        await SeedCategoryAsync();
+        var content = new LearningContent
+        {
+            CategoryId = 100,
+            NameChinese = "测试",
+            NameEnglish = "Test",
+            FileUrl = "C:\\absolute\\path\\url"
+        };
+
+        // Act
+        var result = await _controller.Create(content, CancellationToken.None);
 
         // Assert
         result.Result.Should().BeOfType<BadRequestObjectResult>();
@@ -187,7 +207,7 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 100,
             NameChinese = "旧内容",
             NameEnglish = "Old Content",
-            FileUrl = "old_url",
+            FileUrl = "storage/test/old_url",
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -199,18 +219,18 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 100,
             NameChinese = "新内容",
             NameEnglish = "New Content",
-            FileUrl = "new_url"
+            FileUrl = "storage/test/new_url"
         };
 
         // Act
-        var result = await _controller.Update(content.Id, updatedContent);
+        var result = await _controller.Update(content.Id, updatedContent, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NoContentResult>();
         var dbContent = await _context.LearningContents.FindAsync(content.Id);
         dbContent!.NameChinese.Should().Be("新内容");
         dbContent.NameEnglish.Should().Be("New Content");
-        dbContent.FileUrl.Should().Be("new_url");
+        dbContent.FileUrl.Should().Be("storage/test/new_url");
     }
 
     [Fact]
@@ -222,11 +242,11 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 100,
             NameChinese = "新内容",
             NameEnglish = "New Content",
-            FileUrl = "url"
+            FileUrl = "storage/test/url"
         };
 
         // Act
-        var result = await _controller.Update(999, updatedContent);
+        var result = await _controller.Update(999, updatedContent, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NotFoundResult>();
@@ -242,7 +262,7 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 100,
             NameChinese = "删除",
             NameEnglish = "Delete",
-            FileUrl = "url",
+            FileUrl = "storage/test/url",
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -250,7 +270,7 @@ public class LearningContentsControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.Delete(content.Id);
+        var result = await _controller.Delete(content.Id, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NoContentResult>();
@@ -262,7 +282,7 @@ public class LearningContentsControllerTests : IDisposable
     public async Task Delete_NonExisting_Content_Returns_NotFound()
     {
         // Act
-        var result = await _controller.Delete(999);
+        var result = await _controller.Delete(999, CancellationToken.None);
 
         // Assert
         result.Should().BeOfType<NotFoundResult>();

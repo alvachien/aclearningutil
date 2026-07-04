@@ -1,4 +1,6 @@
 using FluentAssertions;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -17,6 +19,7 @@ public class TTSControllerTests : IDisposable
     private readonly AppDbContext _context;
     private readonly Mock<IConfiguration> _mockConfig;
     private readonly Mock<ILogger<TTSController>> _mockLogger;
+    private readonly Mock<IWebHostEnvironment> _mockEnv;
     private readonly TTSController _controller;
 
     public TTSControllerTests()
@@ -24,19 +27,22 @@ public class TTSControllerTests : IDisposable
         _context = TestDbContextFactory.CreateInMemoryDbContext();
         _mockConfig = new Mock<IConfiguration>();
         _mockLogger = new Mock<ILogger<TTSController>>();
-        _controller = new TTSController(_mockConfig.Object, _mockLogger.Object, _context);
+        _mockEnv = new Mock<IWebHostEnvironment>();
+        // Use a temp directory for AudioFiles in tests
+        _mockEnv.Setup(e => e.ContentRootPath).Returns(Path.GetTempPath());
+        _controller = new TTSController(_mockConfig.Object, _mockLogger.Object, _context, _mockEnv.Object);
     }
 
     [Fact]
     public async Task GetTTS_WithEmptySentence_ReturnsBadRequest()
     {
         // Act
-        var result = await _controller.GetTTS("");
+        var result = await _controller.GetTTS("", CancellationToken.None);
 
         // Assert
         var contentResult = result.Result as ContentResult;
         contentResult.Should().NotBeNull();
-        contentResult!.StatusCode.Should().Be(500);
+        contentResult!.StatusCode.Should().Be(400);
         contentResult.Content.Should().Be("Sentence is mandatory.");
     }
 
@@ -44,12 +50,12 @@ public class TTSControllerTests : IDisposable
     public async Task GetTTS_WithNullSentence_ReturnsBadRequest()
     {
         // Act
-        var result = await _controller.GetTTS(null!);
+        var result = await _controller.GetTTS(null!, CancellationToken.None);
 
         // Assert
         var contentResult = result.Result as ContentResult;
         contentResult.Should().NotBeNull();
-        contentResult!.StatusCode.Should().Be(500);
+        contentResult!.StatusCode.Should().Be(400);
     }
 
     [Fact]
@@ -67,7 +73,7 @@ public class TTSControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result = await _controller.GetTTS(sentence);
+        var result = await _controller.GetTTS(sentence, CancellationToken.None);
 
         // Assert
         var audioFile = result.Value as AudioFile;
@@ -85,14 +91,14 @@ public class TTSControllerTests : IDisposable
         _mockConfig.Setup(c => c["Aliyun:TTSAccessSecret"]).Returns("test-access-secret");
 
         // Act
-        var result = await _controller.GetTTS(sentence);
+        var result = await _controller.GetTTS(sentence, CancellationToken.None);
 
         // Assert
         // Since we're not mocking the HTTP calls, this will fail to get a token
         // and return an error. In a real test, you'd mock the HTTP client.
         var contentResult = result.Result as ContentResult;
         contentResult.Should().NotBeNull();
-        contentResult!.StatusCode.Should().Be(500);
+        contentResult!.StatusCode.Should().Be(502);
     }
 
     [Fact]
@@ -110,8 +116,8 @@ public class TTSControllerTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Act
-        var result1 = await _controller.GetTTS(sentence);
-        var result2 = await _controller.GetTTS(sentence);
+        var result1 = await _controller.GetTTS(sentence, CancellationToken.None);
+        var result2 = await _controller.GetTTS(sentence, CancellationToken.None);
 
         // Assert
         var audioFile1 = result1.Value as AudioFile;

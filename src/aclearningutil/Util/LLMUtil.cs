@@ -5,7 +5,7 @@ namespace aclearningutil.Util
 {
     public class LLMUtil
     {
-        private static readonly HttpClient httpClient = new();
+        private static readonly HttpClient httpClient = new() { Timeout = TimeSpan.FromSeconds(60) };
 
         // Aliyun Model
         public const string qwenModelName = "qwen-plus";
@@ -16,7 +16,7 @@ namespace aclearningutil.Util
         //private const string modelName = "deepseek-reasoner";
         public const string deepseekAPIUrl = "https://api.deepseek.com/v1/chat/completions";
 
-        public static async Task<string> SendPostRequestAsync(string url, string jsonContent, string apiKey)
+        public static async Task<string> SendPostRequestAsync(string url, string jsonContent, string apiKey, CancellationToken cancellationToken = default)
         {
             using var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
@@ -27,16 +27,17 @@ namespace aclearningutil.Util
             request.Content = content;
 
             // Sent and get reply
-            HttpResponseMessage response = await httpClient.SendAsync(request);
+            HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken);
 
             // Process reply
             if (response.IsSuccessStatusCode)
             {
-                return await response.Content.ReadAsStringAsync();
+                return await response.Content.ReadAsStringAsync(cancellationToken);
             }
             else
             {
-                return $"ERROR: {response.StatusCode}";
+                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                return $"ERROR: {response.StatusCode}: {errorBody}";
             }
         }
     }

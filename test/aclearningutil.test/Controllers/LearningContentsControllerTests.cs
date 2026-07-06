@@ -219,7 +219,8 @@ public class LearningContentsControllerTests : IDisposable
             CategoryId = 100,
             NameChinese = "新内容",
             NameEnglish = "New Content",
-            FileUrl = "storage/test/new_url"
+            FileUrl = "storage/test/new_url",
+            Version = 3
         };
 
         // Act
@@ -231,6 +232,43 @@ public class LearningContentsControllerTests : IDisposable
         dbContent!.NameChinese.Should().Be("新内容");
         dbContent.NameEnglish.Should().Be("New Content");
         dbContent.FileUrl.Should().Be("storage/test/new_url");
+        dbContent.Version.Should().Be((byte)3);
+    }
+
+    [Fact]
+    public async Task Update_Clears_Version_When_Set_To_Null()
+    {
+        // Arrange
+        await SeedCategoryAsync();
+        var content = new LearningContent
+        {
+            CategoryId = 100,
+            NameChinese = "内容",
+            NameEnglish = "Content",
+            FileUrl = "storage/test/url",
+            Version = 2,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+        _context.LearningContents.Add(content);
+        await _context.SaveChangesAsync();
+
+        var updatedContent = new LearningContent
+        {
+            CategoryId = 100,
+            NameChinese = "内容",
+            NameEnglish = "Content",
+            FileUrl = "storage/test/url",
+            Version = null
+        };
+
+        // Act
+        var result = await _controller.Update(content.Id, updatedContent, CancellationToken.None);
+
+        // Assert
+        result.Should().BeOfType<NoContentResult>();
+        var dbContent = await _context.LearningContents.FindAsync(content.Id);
+        dbContent!.Version.Should().BeNull();
     }
 
     [Fact]

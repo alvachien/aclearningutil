@@ -35,12 +35,12 @@ The service is part of the broader H.I.H. (Home Information Hub) learning ecosys
 - `AppDbContext.cs`: EF Core DbContext for SQLite
 - `Entities/TtsMapping.cs`: Entity for TTS sentence-to-audio mappings
 - `Entities/LearningContentCategory.cs`: System-owned content categories (6 seeded defaults)
-- `Entities/LearningContent.cs`: Learning content items (FK to category)
+- `Entities/LearningContent.cs`: Learning content items (FK to category; optional `Version`, `IncludeLatex`, `TranslationDisabled` fields)
 - `Entities/UserLearningHistory.cs`: User learning history (FK to content, user-scoped)
 - `Entities/UserLearningRating.cs`: User content ratings (FK to content, user-scoped, rating byte 1-5)
 - Database schema includes unique index on `Sentence` for fast lookups
 
-**Utilities** (`Util/`)
+**Utilities** (`src/aclearningutil/Utility/`)
 - `LLMUtil.cs`: HTTP client for DeepSeek API calls (thread-safe implementation)
 - `AliTokenUtil.cs`: Aliyun TTS token generation and API calls
 
@@ -50,73 +50,7 @@ The service is part of the broader H.I.H. (Home Information Hub) learning ecosys
 
 ## Database
 
-### SQLite Configuration
-- **Database file**: `aclearningutil.db` (auto-created in app root)
-- **Connection**: Configured in `Program.cs` using `Data Source={path}`
-- **Auto-migration**: On first run, migrates data from `AudioFiles/tts_map.json` if present
-
-### Schema
-```sql
-CREATE TABLE TtsMappings (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    Sentence TEXT NOT NULL UNIQUE,
-    FileName TEXT NOT NULL,
-    CreatedAt TEXT NOT NULL DEFAULT(datetime('now'))
-);
-
-CREATE TABLE LearningContentCategories (
-    Id INTEGER PRIMARY KEY,
-    NameChinese TEXT NOT NULL,
-    NameEnglish TEXT NOT NULL
-);
--- Seeded with 6 default categories: 词汇/Vocabulary, 句子/Sentences, 听力/Listening,
--- 中文/Chinese, 公式/Formula, 知识库/Knowledge Bank
-
-CREATE TABLE LearningContents (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    CategoryId INTEGER NOT NULL,
-    NameChinese TEXT NOT NULL,
-    NameEnglish TEXT NOT NULL,
-    FileUrl TEXT NOT NULL,
-    CreatedAt TEXT NOT NULL DEFAULT(datetime('now')),
-    UpdatedAt TEXT NOT NULL DEFAULT(datetime('now')),
-    FOREIGN KEY (CategoryId) REFERENCES LearningContentCategories(Id)
-);
-
-CREATE TABLE UserLearningHistories (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    UserId TEXT NOT NULL,
-    ContentId INTEGER NOT NULL,
-    ItemId INTEGER,
-    LearnDate TEXT NOT NULL DEFAULT(date('now')),
-    SuccessIndicator INTEGER NOT NULL,
-    FOREIGN KEY (ContentId) REFERENCES LearningContents(Id)
-);
-
-CREATE TABLE UserLearningRatings (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    UserId TEXT NOT NULL,
-    ContentId INTEGER NOT NULL,
-    ItemId INTEGER,
-    ScoreDate TEXT NOT NULL DEFAULT(date('now')),
-    Rating INTEGER NOT NULL,  -- byte, 1-5
-    FOREIGN KEY (ContentId) REFERENCES LearningContents(Id)
-);
-```
-
-### Working with the Database
-```csharp
-// Inject DbContext in controllers
-private readonly AppDbContext _dbContext;
-
-// Query with async/await
-var mapping = await _dbContext.TtsMappings
-    .FirstOrDefaultAsync(m => m.Sentence == sentence);
-
-// Insert new records
-_dbContext.TtsMappings.Add(new TtsMapping { ... });
-await _dbContext.SaveChangesAsync();
-```
+The SQLite database — connection configuration, the full table schema (with indexes and foreign keys), the `EnsureCreated` / `EnsureColumnAsync` schema-evolution strategy, and instructions for inspecting it — is documented in [`docs/design-database.md`](docs/design-database.md).
 
 ## Development Guidelines
 
@@ -187,11 +121,7 @@ if (mapping != null) { ... }
 
 ### Modifying Database Schema
 
-For development with existing data:
-1. Update entity classes
-2. Update `OnModelCreating()` configuration
-3. Delete `aclearningutil.db` to recreate (loses data)
-4. Or use EF Core migrations: `dotnet ef migrations add <name>`
+See [`docs/design-database.md`](docs/design-database.md#modifying-the-schema) for the schema-evolution procedure: `EnsureCreated` / `EnsureColumnAsync` for adding nullable columns to existing databases, and the standalone `src/Util/add_learningcontent_columns.py` helper for patching a deployed database outside the app.
 
 ### Testing the TTS Flow
 
@@ -249,14 +179,16 @@ Configured in `Program.cs`. Currently allows:
 
 ```
 aclearningutil.sln
-├── src/aclearningutil/                    # Main ASP.NET Core Web API
-│   ├── Program.cs                         # Entry point (minimal hosting model)
-│   ├── Controllers/                       # API controllers
-│   ├── Data/                              # EF Core DbContext and entities
-│   ├── Models/                            # DTOs and domain models
-│   ├── Util/                              # Utility classes (LLM, Aliyun token)
-│   ├── AudioFiles/                        # Generated audio files (gitignored)
-│   └── Properties/                        # launchSettings.json, publish profiles
+├── src/
+│   ├── aclearningutil/                    # Main ASP.NET Core Web API
+│   │   ├── Program.cs                     # Entry point (minimal hosting model)
+│   │   ├── Controllers/                   # API controllers
+│   │   ├── Data/                          # EF Core DbContext and entities
+│   │   ├── Models/                        # DTOs and domain models
+│   │   ├── Utility/                       # Utility classes (LLM, Aliyun token)
+│   │   ├── AudioFiles/                    # Generated audio files (gitignored)
+│   │   └── Properties/                    # launchSettings.json, publish profiles
+│   └── Util/                              # Standalone helpers (Python DB patch, Node schema validator)
 ├── test/
 │   ├── aclearningutil.test/               # Unit tests (xUnit + Moq)
 │   └── aclearningutil.test.common/        # Shared test utilities
@@ -294,6 +226,10 @@ dotnet test --filter DisplayName~aclearningutil.test
 ```bash
 dotnet publish src/aclearningutil/aclearningutil.csproj -c Release -o ./publish
 ```
+
+### CI
+
+GitHub Actions (`.github/workflows/build-test.yml`) restores, builds (`Release`), and tests the solution on every push and on pull requests targeting `main`.
 
 ### Production Considerations
 - Logs written to `../Logs/aclearningutil/` (daily rolling, 14-day retention)

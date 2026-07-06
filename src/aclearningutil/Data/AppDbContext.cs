@@ -48,6 +48,9 @@ public class AppDbContext : DbContext
             entity.Property(e => e.NameChinese).IsRequired().HasMaxLength(500);
             entity.Property(e => e.NameEnglish).IsRequired().HasMaxLength(500);
             entity.Property(e => e.FileUrl).IsRequired().HasMaxLength(1000);
+            entity.Property(e => e.Version).HasColumnType("tinyint");
+            entity.Property(e => e.IncludeLatex);
+            entity.Property(e => e.TranslationDisabled);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("datetime('now')");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("datetime('now')");
 

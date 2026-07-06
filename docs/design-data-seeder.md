@@ -11,16 +11,17 @@ The seeder executes four phases, in order, every time the application starts:
 | Phase | What it does | Idempotent? | Source of truth |
 |---|---|---|---|
 | 0. **Create database** | `EnsureCreated()` builds the schema and applies the EF Core `HasData` seed | Yes (no-op if DB exists) | `AppDbContext.OnModelCreating` |
-| 1. **Seed categories** | Inserts the 5 active content categories if missing | Yes (`AnyAsync` + catch `SqliteException`) | Hardcoded array in `Program.cs` |
+| 0b. **Patch schema** | `EnsureColumnAsync` adds new nullable columns to `LearningContents` on pre-existing DBs | Yes (skips columns that already exist) | `EnsureColumnAsync` calls in `Program.cs` |
+| 1. **Seed categories** | Inserts the 6 content categories if missing | Yes (`AnyAsync` + catch `SqliteException`) | Hardcoded array in `Program.cs` |
 | 2. **Migrate TTS cache** | One-time import of `AudioFiles/tts_map.json` into `TtsMappings` | Yes (file renamed on success) | `AudioFiles/tts_map.json` |
-| 3. **Sync content** | Reconciles `LearningContents` with 5 JSON index files under `Storage/` | Yes (add new, update changed, never delete) | `Storage/<subfolder>/<index>.json` |
+| 3. **Sync content** | Reconciles `LearningContents` with 6 JSON index files under `Storage/` | Yes (add new, update changed, never delete) | `Storage/<subfolder>/<index>.json` |
 
 **Design goals**
 
 - **Safe to run on every start.** Every phase checks for existing rows before writing; re-running only adds what is missing.
 - **Concurrent-start tolerant.** Two instances starting at once will not corrupt each other — unique constraints and caught `SqliteException`s act as a fallback for the `AnyAsync` race.
 - **Non-destructive.** Content items that disappear from the JSON index are *never* deleted from the database, because `UserLearningHistories` and `UserLearningRatings` reference them via foreign keys (`OnDelete: Restrict`). They are only logged as orphans.
-- **Ensure the database schema is up to date.** `EnsureCreated()` creates the full schema from the EF Core model, so a fresh database always matches the current model. (On an already-existing database the call is a no-op; schema evolution there requires EF Core migrations — see [`docs/design-database.md`](design-database.md) § Modifying the Schema.)
+- **Ensure the database schema is up to date.** `EnsureCreated()` creates the full schema from the EF Core model, so a fresh database always matches the current model. On an already-existing database the call is a no-op, so `EnsureColumnAsync` runs immediately after to `ALTER TABLE ... ADD COLUMN` for any new nullable columns (e.g. `IncludeLatex`, `TranslationDisabled`) — see Phase 0b and [`docs/design-database.md`](design-database.md) § Modifying the Schema.
 
 ### Overall startup sequence
 
@@ -36,7 +37,10 @@ sequenceDiagram
     App->>SQLite: Database.EnsureCreated()
     Note over SQLite: First run: create schema + HasData (6 categories)<br/>Subsequent runs: no-op
 
-    Note over App: Phase 1 — seed 5 categories (idempotent)
+    Note over App: Phase 0b — patch schema for new nullable columns
+    App->>SQLite: EnsureColumnAsync → ALTER TABLE ADD COLUMN (if missing)
+
+    Note over App: Phase 1 — seed 6 categories (idempotent)
     App->>SQLite: per-category AnyAsync → Add → SaveChangesAsync
 
     Note over App: Phase 2 — migrate TTS cache
@@ -47,7 +51,7 @@ sequenceDiagram
         App->>FS: rename → tts_map.json.migrated
     end
 
-    Note over App: Phase 3 — sync LearningContents (5 index files)
+    Note over App: Phase 3 — sync LearningContents (6 index files)
     App->>FS: read each Storage/{sub}/{index}.json
     App->>SQLite: add new / update existing LearningContents
     Note over App: log (do not delete) orphans
@@ -74,19 +78,32 @@ db.Database.EnsureCreated();
 | 5 | 公式 | Formula | `HasData` **only** |
 | 6 | 知识库 | Knowledge Bank | `HasData` |
 
-> **Note — two discrepancies between `HasData` and the Phase 1 loop:**
-> 1. **Category 5 (Formula)** is seeded by `HasData` but is **not** in the Phase 1 runtime array. If a database was created by an older build (before `HasData` included Formula) or if row 5 was manually deleted, the Phase 1 loop will *not* restore it. Only a fresh `EnsureCreated` produces row 5.
-> 2. **Category 2 NameEnglish** is `"Sentences"` (plural) in `HasData` but `"Sentence"` (singular) in the Phase 1 array. On a fresh DB the `HasData` value (`"Sentences"`) wins because Phase 1 finds the row already exists and skips it.
->
-> These are intentional-looking quirks of the current code; both values are documented here so the behavior is predictable.
+> The Phase 1 array mirrors `HasData` exactly — all six categories (including Formula, Id 5) and the plural `"Sentences"` spelling. Either path produces the same rows.
 
-Because `EnsureCreated` is a no-op on an existing database, **it does not apply schema changes** to a database that already exists. For schema evolution, use EF Core migrations instead (see [`docs/design-database.md`](design-database.md) § Modifying the Schema).
+Because `EnsureCreated` is a no-op on an existing database, **it does not apply schema changes** to a database that already exists. New nullable columns are added instead by the `EnsureColumnAsync` step in Phase 0b; for the full story see [`docs/design-database.md`](design-database.md) § Modifying the Schema.
+
+---
+
+## Phase 0b — Patch schema for new columns (`EnsureColumnAsync`)
+
+Immediately after `EnsureCreated`, `Program.cs` runs a local function `EnsureColumnAsync` for each nullable column added to `LearningContent` after the initial schema. `EnsureCreated` only ever creates a missing database, so an already-existing `aclearningutil.db` would otherwise be missing the new columns; this step adds them with `ALTER TABLE ... ADD COLUMN`.
+
+```csharp
+await EnsureColumnAsync(db, app.Logger, "LearningContents", "IncludeLatex", "INTEGER");
+await EnsureColumnAsync(db, app.Logger, "LearningContents", "TranslationDisabled", "INTEGER");
+```
+
+`EnsureColumnAsync` reads `pragma_table_info` for the table and only runs the `ALTER TABLE` when the column is absent, so it is **idempotent** and safe on both fresh and already-patched databases. The column type (`INTEGER`) mirrors exactly what EF Core would have created — SQLite has no native BOOLEAN type, and both `tinyint` and `bool` map to INTEGER affinity.
+
+> `Version` was added the same way historically; the standalone helper [`Util/add_learningcontent_columns.py`](../src/Util/add_learningcontent_columns.py) performs the identical patch outside the app for already-deployed databases.
+
+Only **nullable** columns can be added this way — SQLite's `ALTER TABLE ... ADD COLUMN` cannot add a `NOT NULL` column without a default. New required columns still require recreating the database.
 
 ---
 
 ## Phase 1 — Seed content categories
 
-Immediately after `EnsureCreated`, `Program.cs` ensures five active categories exist via an explicit, idempotent loop. This guards the case where the database already exists (so `HasData` did not run) but a category row is missing.
+Immediately after `EnsureCreated`, `Program.cs` ensures all six categories exist via an explicit, idempotent loop. This guards the case where the database already exists (so `HasData` did not run) but a category row is missing.
 
 ```mermaid
 sequenceDiagram
@@ -94,7 +111,7 @@ sequenceDiagram
     participant DB as AppDbContext
     participant SQLite as SQLite
 
-    loop for each of 5 categories (Id = 1, 2, 3, 4, 6)
+    loop for each of 6 categories (Id = 1, 2, 3, 4, 5, 6)
         App->>SQLite: AnyAsync(c => c.Id == id)
         alt row does not exist
             App->>DB: LearningContentCategories.Add(new { Id, NameChinese, NameEnglish })
@@ -108,14 +125,15 @@ sequenceDiagram
     end
 ```
 
-The five categories inserted by this loop:
+The six categories inserted by this loop:
 
 | Id | NameChinese | NameEnglish |
 |---|---|---|
 | 1 | 词汇 | Vocabulary |
-| 2 | 句子 | Sentence |
+| 2 | 句子 | Sentences |
 | 3 | 听力 | Listening |
 | 4 | 中文 | Chinese |
+| 5 | 公式 | Formula |
 | 6 | 知识库 | Knowledge Bank |
 
 **Concurrency handling.** The `AnyAsync` check and the `SaveChangesAsync` are not atomic across instances. If two instances start simultaneously and both observe "not exists" for the same `Id`, one insert succeeds and the other throws a `SqliteException` (primary-key violation). The `catch (SqliteException)` block calls `db.ChangeTracker.Clear()` to discard the conflicting tracked entity and continues — the category is already present, so the outcome is correct. This is the comment's "INSERT OR IGNORE semantics".
@@ -176,9 +194,9 @@ sequenceDiagram
 
 ## Phase 3 — Sync `LearningContents` from JSON index files
 
-This is the most substantial phase. It reconciles the `LearningContents` table with five JSON index files on disk, one per content category. The work is done by a single local function, `SyncLearningContentsFromJsonAsync`, invoked five times with different parameters.
+This is the most substantial phase. It reconciles the `LearningContents` table with six JSON index files on disk, one per content category. The work is done by a single local function, `SyncLearningContentsFromJsonAsync`, invoked six times with different parameters.
 
-### The five sync calls
+### The six sync calls
 
 | # | Subfolder | Index file | CategoryId | Category |
 |---|---|---|---|---|
@@ -187,8 +205,9 @@ This is the most substantial phase. It reconciles the `LearningContents` table w
 | 3 | `knowledge-exercises` | `data.json` | 6 | Knowledge Bank |
 | 4 | `learnchinese` | `data.json` | 4 | Chinese |
 | 5 | `englishlistening` | `data.json` | 3 | Listening |
+| 6 | `formula` | `formula.json` | 5 | Formula |
 
-> **Note:** Category 5 (Formula) has no sync call — it has no on-disk content yet (see [`docs/design-database.md`](design-database.md)).
+> **Note:** `formula.json` entries also carry a `contenttype` field (e.g. `"math"`/`"physics"`/`"chemistry"`) that has no corresponding DB column and is ignored by the sync logic. The `version` field is synced (see below).
 
 ### JSON index file format
 
@@ -206,6 +225,10 @@ Each index file is a JSON array of objects. The seeder is tolerant of two name k
 | `file` | yes | Filename within the subfolder; used to build `FileUrl`. Entries missing this (or non-string) are skipped with a warning. |
 | `name` | one of `name`/`book` | Standard content name. Written to both `NameChinese` and `NameEnglish`. |
 | `book` | (alternative to `name`) | Legacy key used by `englishlistening`. Used only when `name` is absent. |
+| `version` | no | Optional byte (0–255). Written to `LearningContents.Version` on insert; on update, applied only when present and differing (a missing field never clears an existing value). Out-of-range values are logged and ignored. Present on `knowledge-exercises` and `formula` entries. |
+| `includeLatex` | no | Optional bool. Written to `LearningContents.IncludeLatex` on insert; on update, applied only when present and differing (missing → untouched). Present on some `knowledge-exercises` entries. |
+| `translationDisabled` | no | Optional bool. Written to `LearningContents.TranslationDisabled` on insert; on update, applied only when present and differing (missing → untouched). Not currently present in any index file; read if present (intended for `learnchinese`). |
+| `contenttype` | no | Present only on `formula` entries. Has no DB column and is ignored. |
 
 If neither `name` nor `book` is present (or empty), the entry is skipped with a warning.
 
@@ -246,19 +269,21 @@ sequenceDiagram
         alt name or file missing/empty
             App->>App: LogWarning; continue
         end
+        App->>App: parse optional version / includeLatex / translationDisabled
         App->>App: existing = existingMatches.FirstOrDefault(match by 3 URL patterns)
         alt existing found
             App->>App: if FileUrl != primary → migrate to storage/{sub}/{file}
-            App->>App: if NameChinese/NameEnglish changed → update + UpdatedAt = UtcNow
+            App->>App: if name / version / includeLatex / translationDisabled changed → update + UpdatedAt = UtcNow
+            Note over App: updateCount++ (if changed)
         else not found
-            App->>DB: LearningContents.Add(new { CategoryId, name, name, primaryFileUrl, UtcNow, UtcNow })
+            App->>DB: LearningContents.Add(new { CategoryId, name, name, primaryFileUrl, version, includeLatex, translationDisabled, UtcNow, UtcNow })
             Note over App: addCount++
         end
     end
 
-    alt addCount > 0
+    alt addCount > 0 || updateCount > 0
         App->>SQLite: SaveChangesAsync()
-        App->>App: LogInformation("Added {Count} …")
+        App->>App: LogInformation("Synced …: {Added} added, {Updated} updated")
     end
 
     Note over App: Orphan detection
@@ -278,12 +303,19 @@ For a JSON entry with no matching DB row, a new `LearningContent` is inserted:
 | `NameChinese` | `name` |
 | `NameEnglish` | `name` (same value) |
 | `FileUrl` | `storage/{subFolder}/{file}` |
+| `Version` | the entry's `version` (byte), or `null` if absent |
+| `IncludeLatex` | the entry's `includeLatex` (bool), or `null` if absent |
+| `TranslationDisabled` | the entry's `translationDisabled` (bool), or `null` if absent |
 | `CreatedAt` | `DateTime.UtcNow` |
 | `UpdatedAt` | `DateTime.UtcNow` |
 
 For an entry that matches an existing row (by any of the three URL patterns), the seeder **patches in place**:
 - If `FileUrl` is a legacy form, it is rewritten to the primary `storage/...` form.
-- If `NameChinese` or `NameEnglish` differ from `name`, both are updated and `UpdatedAt` is bumped to `DateTime.UtcNow`.
+- If `NameChinese` or `NameEnglish` differ from `name`, both are updated.
+- If the entry declares a `version` that differs from the stored value, `Version` is updated. A missing `version` field leaves the stored value untouched (it is never cleared).
+- If the entry declares `includeLatex` and it differs from the stored value, `IncludeLatex` is updated (missing → untouched).
+- If the entry declares `translationDisabled` and it differs from the stored value, `TranslationDisabled` is updated (missing → untouched).
+- If any of the above changed, `UpdatedAt` is bumped to `DateTime.UtcNow` and `updateCount` is incremented.
 
 ### Orphan handling (non-destructive)
 
@@ -296,7 +328,7 @@ These are NOT deleted to protect user learning histories and ratings. Remove the
 
 This protects referential integrity: `UserLearningHistories.ContentId` and `UserLearningRatings.ContentId` both reference `LearningContents(Id)` with `OnDelete: Restrict`. Deleting a content item that a user has history or ratings for would either fail or orphan user data. Manual removal is left to the operator.
 
-> **Behavior caveat — pure updates are not always persisted.** `SaveChangesAsync()` is called **only when `addCount > 0`**. If a sync pass produces *only* in-place updates (a URL migration or a name change) and **no** new inserts, those tracked changes are not saved to the database on that pass. In practice this is rarely visible, because a pass that touches existing rows usually also adds new ones; but a JSON index that only renames titles (and adds nothing new) will not have its title changes persisted until at least one new item is added in a later pass. New inserts are always persisted.
+> `SaveChangesAsync()` is called whenever a sync pass produces **any** change — new inserts (`addCount > 0`) **or** in-place updates (`updateCount > 0`). Both adds and updates are persisted on every pass.
 
 ### Per-entry error isolation
 
@@ -308,7 +340,8 @@ Each entry is processed inside its own `try/catch`. A malformed entry (missing/i
 
 | Property | How it is guaranteed |
 |---|---|
-| **Re-runnable on every start** | Phase 1 `AnyAsync` check; Phase 2 file rename; Phase 3 add-only-with-match-check. |
+| **Re-runnable on every start** | Phase 1 `AnyAsync` check; Phase 2 file rename; Phase 3 add/update-with-match-check. |
+| **Schema stays current on existing DBs** | Phase 0b `EnsureColumnAsync` adds new nullable columns only when missing (idempotent). |
 | **No duplicate categories** | `AnyAsync` pre-check + PK violation caught as `SqliteException` + `ChangeTracker.Clear()`. |
 | **No duplicate TTS mappings** | `AnyAsync` pre-check + UNIQUE index on `TtsMappings.Sentence`. |
 | **No duplicate content items** | Pre-loaded `existingMatches` matched by `CategoryId` + three `FileUrl` patterns. |

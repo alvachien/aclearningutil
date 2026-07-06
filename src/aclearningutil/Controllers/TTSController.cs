@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
-using aclearningutil.Util;
+using aclearningutil.Utility;
 using aclearningutil.Data;
 using aclearningutil.Data.Entities;
 using System.Net;

@@ -1,7 +1,7 @@
 ﻿using System.Net.Http.Headers;
 using System.Text;
 
-namespace aclearningutil.Util
+namespace aclearningutil.Utility
 {
     public class LLMUtil
     {

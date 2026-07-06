@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using aclearningutil.Models;
-using aclearningutil.Util;
+using aclearningutil.Utility;
 
 namespace aclearningutil.Controllers
 {

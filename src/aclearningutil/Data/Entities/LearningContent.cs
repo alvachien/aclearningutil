@@ -7,6 +7,9 @@ public class LearningContent
     public string NameChinese { get; set; } = string.Empty;
     public string NameEnglish { get; set; } = string.Empty;
     public string FileUrl { get; set; } = string.Empty;
+    public byte? Version { get; set; }
+    public bool? IncludeLatex { get; set; }
+    public bool? TranslationDisabled { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 

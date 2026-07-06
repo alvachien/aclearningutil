@@ -110,6 +110,7 @@ namespace aclearningutil.Controllers
             existing.NameChinese = content.NameChinese;
             existing.NameEnglish = content.NameEnglish;
             existing.FileUrl = content.FileUrl;
+            existing.Version = content.Version;
             existing.UpdatedAt = DateTime.UtcNow;
             await _dbContext.SaveChangesAsync(cancellationToken);
             return NoContent();

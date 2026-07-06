@@ -15,6 +15,7 @@ public class LearningContentTests
         content.NameChinese.Should().BeEmpty();
         content.NameEnglish.Should().BeEmpty();
         content.FileUrl.Should().BeEmpty();
+        content.Version.Should().BeNull();
     }
 
     [Fact]
@@ -28,6 +29,7 @@ public class LearningContentTests
             NameChinese = "测试内容",
             NameEnglish = "Test Content",
             FileUrl = "https://example.com/file.mp3",
+            Version = 2,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -38,6 +40,7 @@ public class LearningContentTests
         content.NameChinese.Should().Be("测试内容");
         content.NameEnglish.Should().Be("Test Content");
         content.FileUrl.Should().Be("https://example.com/file.mp3");
+        content.Version.Should().Be((byte)2);
     }
 
     [Fact]

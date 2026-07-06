@@ -138,6 +138,9 @@ Individual learning content items, each belonging to a category. `FileUrl` point
 | `NameChinese` | TEXT | No | — | Required, max length 500 |
 | `NameEnglish` | TEXT | No | — | Required, max length 500 |
 | `FileUrl` | TEXT | No | — | Required, max length 1000 |
+| `Version` | INTEGER (tinyint) | Yes | — | Optional, byte (0–255); seeded from JSON `version` |
+| `IncludeLatex` | INTEGER | Yes | — | Optional bool (0/1); seeded from JSON `includeLatex` |
+| `TranslationDisabled` | INTEGER | Yes | — | Optional bool (0/1); seeded from JSON `translationDisabled` |
 | `CreatedAt` | TEXT | No | `datetime('now')` | — |
 | `UpdatedAt` | TEXT | No | `datetime('now')` | — |
 
@@ -158,6 +161,9 @@ CREATE TABLE LearningContents (
     NameChinese TEXT NOT NULL,
     NameEnglish TEXT NOT NULL,
     FileUrl TEXT NOT NULL,
+    Version INTEGER,
+    IncludeLatex INTEGER,
+    TranslationDisabled INTEGER,
     CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
     UpdatedAt TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (CategoryId) REFERENCES LearningContentCategories(Id)
@@ -245,22 +251,21 @@ CREATE INDEX IX_UserLearningRatings_ContentId ON UserLearningRatings (ContentId)
 
 - **Primary keys**: `Id` is an autoincrement INTEGER for all tables except `LearningContentCategories`, where it is manually assigned to keep the seeded category IDs stable.
 - **Date/time storage**: SQLite stores datetimes as TEXT. `CreatedAt`/`UpdatedAt` default to `datetime('now')` (full timestamp); `LearnDate`/`ScoreDate` default to `date('now')` (date only).
-- **Booleans**: EF Core maps `bool` (`SuccessIndicator`) to INTEGER (0/1) in SQLite.
+- **Booleans**: EF Core maps `bool` to INTEGER (0/1) in SQLite (`SuccessIndicator`, and the nullable `IncludeLatex` / `TranslationDisabled` on `LearningContents`).
 - **Foreign-key behavior**: all FKs use `OnDelete: Restrict`, so deleting a `LearningContent` that still has history/rating rows, or a `LearningContentCategory` that still has content rows, is prevented at the EF level. (Note: SQLite does not enforce FKs unless `PRAGMA foreign_keys = ON` is set; EF Core's `Restrict` is enforced through the EF change tracker.)
 - **User scoping**: `UserLearningHistories` and `UserLearningRatings` are scoped per-user via `UserId`, which comes from the authenticated JWT — there is no local `Users` table.
 - **Max-length constraints** (`HasMaxLength`) translate to EF Core metadata and are enforced in the application layer; SQLite itself does not enforce TEXT length limits.
 
 ## Modifying the Schema
 
-For development with existing data:
+This project does **not** use EF Core migrations. The schema is created on startup via `db.Database.EnsureCreated()` (see [`Program.cs`](../src/aclearningutil/Program.cs)), which only builds a database that does not yet exist — it never alters an existing one. To evolve the schema against a database that already exists:
 
-1. Update the entity classes in `src/aclearningutil/Data/Entities/`.
-2. Update the `OnModelCreating()` configuration in `src/aclearningutil/Data/AppDbContext.cs`.
-3. Either delete `aclearningutil.db` to recreate from scratch (loses data), or apply an EF Core migration:
-   ```bash
-   dotnet ef migrations add <Name> --project src/aclearningutil
-   dotnet ef database update --project src/aclearningutil
-   ```
+1. Add the column to the entity class in `src/aclearningutil/Data/Entities/`.
+2. Configure it in `OnModelCreating()` in `src/aclearningutil/Data/AppDbContext.cs`.
+3. Add an `EnsureColumnAsync(...)` call in `Program.cs` so startup runs `ALTER TABLE ... ADD COLUMN` for the new nullable column on pre-existing databases — mirror exactly what `EnsureCreated` would have created (e.g. `INTEGER` for bool/byte columns). This is how `IncludeLatex` and `TranslationDisabled` were added.
+4. For a fresh database, just delete `aclearningutil.db` and let `EnsureCreated` recreate it (loses data).
+
+A standalone helper, [`src/Util/add_learningcontent_columns.py`](../src/Util/add_learningcontent_columns.py), applies the same `ALTER TABLE` patch with a `.bak` backup and idempotent re-runs, for manually patching a deployed database outside the app.
 
 ## Inspecting the Database
 

@@ -10,4 +10,10 @@ Storage/
 src/aclearningutil/aclearningutil.db
 src/aclearningutil/aclearningutil.db-shm
 src/aclearningutil/aclearningutil.db-wal
+src/aclearningutil/aclearningutil.db.bak
+*.bak
+
+# Python
+__pycache__/
+*.pyc
 

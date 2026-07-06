@@ -1,7 +1,7 @@
 using FluentAssertions;
-using aclearningutil.Util;
+using aclearningutil.Utility;
 
-namespace aclearningutil.test.Util;
+namespace aclearningutil.test.Utility;
 
 public class AliTokenUtilTests
 {

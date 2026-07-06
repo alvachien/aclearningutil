@@ -108,13 +108,37 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
 
+    // Ensure new nullable columns exist on pre-existing SQLite databases. EnsureCreated()
+    // only creates a missing database; it does not add columns to an already-created DB,
+    // so older databases need an explicit ALTER TABLE for the IncludeLatex/TranslationDisabled
+    // columns added to LearningContent.
+    static async Task EnsureColumnAsync(AppDbContext db, Microsoft.Extensions.Logging.ILogger logger, string tableName, string columnName, string columnType)
+    {
+#pragma warning disable EF1003 // Identifiers (table/column names) cannot be parameterized; all inputs here are hard-coded internal constants, not user input.
+        var existingColumns = await db.Database
+            .SqlQueryRaw<string>("SELECT name FROM pragma_table_info('" + tableName + "')")
+            .ToListAsync();
+
+        if (!existingColumns.Contains(columnName))
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnType + ";");
+            logger.LogInformation("Added missing column {Column} to table {Table}.", columnName, tableName);
+        }
+#pragma warning restore EF1003
+    }
+
+    await EnsureColumnAsync(db, app.Logger, "LearningContents", "IncludeLatex", "INTEGER");
+    await EnsureColumnAsync(db, app.Logger, "LearningContents", "TranslationDisabled", "INTEGER");
+
     // Seed LearningContentCategories (use INSERT OR IGNORE semantics for idempotent startup)
     var categories = new (int Id, string NameChinese, string NameEnglish)[]
     {
         (1, "词汇", "Vocabulary"),
-        (2, "句子", "Sentence"),
+        (2, "句子", "Sentences"),
         (3, "听力", "Listening"),
         (4, "中文", "Chinese"),
+        (5, "公式", "Formula"),
         (6, "知识库", "Knowledge Bank"),
     };
     foreach (var (id, nameCn, nameEn) in categories)
@@ -239,6 +263,7 @@ using (var scope = app.Services.CreateScope())
             .ToListAsync();
 
         var addCount = 0;
+        var updateCount = 0;
         foreach (var entry in jsonEntries)
         {
             try
@@ -267,6 +292,35 @@ using (var scope = app.Services.CreateScope())
                     continue;
                 }
 
+                // Optional "version" field (byte, 0-255). Absent or invalid → null.
+                // On update, a null here leaves the existing Version untouched (never clears a set value).
+                byte? version = null;
+                if (entry.TryGetProperty("version", out var versionProp) && versionProp.ValueKind == JsonValueKind.Number)
+                {
+                    if (versionProp.TryGetByte(out var versionByte))
+                    {
+                        version = versionByte;
+                    }
+                    else
+                    {
+                        logger.LogWarning("Entry '{Name}' in {JsonFileName} has a 'version' outside byte range (0-255); ignoring version.", name, jsonFileName);
+                    }
+                }
+
+                // Optional "includeLatex" flag (knowledge-exercises data.json). Absent → null (untouched on update).
+                bool? includeLatex = null;
+                if (entry.TryGetProperty("includeLatex", out var includeLatexProp) && (includeLatexProp.ValueKind == JsonValueKind.True || includeLatexProp.ValueKind == JsonValueKind.False))
+                {
+                    includeLatex = includeLatexProp.GetBoolean();
+                }
+
+                // Optional "translationDisabled" flag (learnchinese data.json). Absent → null (untouched on update).
+                bool? translationDisabled = null;
+                if (entry.TryGetProperty("translationDisabled", out var translationDisabledProp) && (translationDisabledProp.ValueKind == JsonValueKind.True || translationDisabledProp.ValueKind == JsonValueKind.False))
+                {
+                    translationDisabled = translationDisabledProp.GetBoolean();
+                }
+
                 var primaryFileUrl = $"storage/{subFolder}/{file}";
                 var legacyFileUrl1 = $"data/{subFolder}/{file}";
                 var legacyFileUrl2 = $"{subFolder}/{file}";
@@ -276,17 +330,42 @@ using (var scope = app.Services.CreateScope())
 
                 if (existing != null)
                 {
+                    var changed = false;
                     // Migrate FileUrl to current pattern if needed
                     if (existing.FileUrl != primaryFileUrl)
                     {
                         existing.FileUrl = primaryFileUrl;
+                        changed = true;
                     }
                     // Update name if changed
                     if (existing.NameChinese != name || existing.NameEnglish != name)
                     {
                         existing.NameChinese = name;
                         existing.NameEnglish = name;
+                        changed = true;
+                    }
+                    // Update version only when the JSON entry declares one and it differs
+                    if (version.HasValue && existing.Version != version)
+                    {
+                        existing.Version = version;
+                        changed = true;
+                    }
+                    // Update includeLatex only when the JSON entry declares it and it differs
+                    if (includeLatex.HasValue && existing.IncludeLatex != includeLatex)
+                    {
+                        existing.IncludeLatex = includeLatex;
+                        changed = true;
+                    }
+                    // Update translationDisabled only when the JSON entry declares it and it differs
+                    if (translationDisabled.HasValue && existing.TranslationDisabled != translationDisabled)
+                    {
+                        existing.TranslationDisabled = translationDisabled;
+                        changed = true;
+                    }
+                    if (changed)
+                    {
                         existing.UpdatedAt = DateTime.UtcNow;
+                        updateCount++;
                     }
                 }
                 else
@@ -297,6 +376,9 @@ using (var scope = app.Services.CreateScope())
                         NameChinese = name,
                         NameEnglish = name,
                         FileUrl = primaryFileUrl,
+                        Version = version,
+                        IncludeLatex = includeLatex,
+                        TranslationDisabled = translationDisabled,
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow,
                     });
@@ -309,10 +391,10 @@ using (var scope = app.Services.CreateScope())
             }
         }
 
-        if (addCount > 0)
+        if (addCount > 0 || updateCount > 0)
         {
             await db.SaveChangesAsync();
-            logger.LogInformation("Added {Count} content items for category {CategoryId} from {JsonFileName}.", addCount, categoryId, jsonFileName);
+            logger.LogInformation("Synced category {CategoryId} from {JsonFileName}: {Added} added, {Updated} updated.", categoryId, jsonFileName, addCount, updateCount);
         }
 
         // Log DB records that exist in DB but not in JSON (instead of hard-deleting, to protect user data)
@@ -345,6 +427,11 @@ using (var scope = app.Services.CreateScope())
 
     // Sync Listening from data.json (CategoryId = 3)
     await SyncLearningContentsFromJsonAsync(db, syncLogger, seedStorageFolder, "englishlistening", 3, "data.json");
+
+    // Sync Formula from formula.json (CategoryId = 5).
+    // formula.json entries also carry a "contenttype" field (e.g. "math"/"physics"/"chemistry")
+    // that has no corresponding DB column, so it is intentionally ignored by the sync logic.
+    await SyncLearningContentsFromJsonAsync(db, syncLogger, seedStorageFolder, "formula", 5, "formula.json");
 }
 
 // Configure the HTTP request pipeline.

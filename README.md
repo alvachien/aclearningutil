@@ -31,71 +31,7 @@ A learning utility API built with ASP.NET Core 10.0, providing Text-to-Speech (T
 
 ## Database
 
-The application uses SQLite for persistent storage:
-
-- **Database File**: `aclearningutil.db` (auto-created on first run)
-- **Location**: Application root directory
-
-### Schema
-
-```sql
-CREATE TABLE TtsMappings (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    Sentence TEXT NOT NULL UNIQUE,
-    FileName TEXT NOT NULL,
-    CreatedAt TEXT NOT NULL DEFAULT(datetime('now'))
-);
-
-CREATE TABLE LearningContentCategories (
-    Id INTEGER PRIMARY KEY,
-    NameChinese TEXT NOT NULL,
-    NameEnglish TEXT NOT NULL
-);
--- Seeded with 6 default categories: 词汇/Vocabulary, 句子/Sentences, 听力/Listening,
--- 中文/Chinese, 公式/Formula, 知识库/Knowledge Bank
-
-CREATE TABLE LearningContents (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    CategoryId INTEGER NOT NULL,
-    NameChinese TEXT NOT NULL,
-    NameEnglish TEXT NOT NULL,
-    FileUrl TEXT NOT NULL,
-    CreatedAt TEXT NOT NULL DEFAULT(datetime('now')),
-    UpdatedAt TEXT NOT NULL DEFAULT(datetime('now')),
-    FOREIGN KEY (CategoryId) REFERENCES LearningContentCategories(Id)
-);
-
-CREATE TABLE UserLearningHistories (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    UserId TEXT NOT NULL,
-    ContentId INTEGER NOT NULL,
-    ItemId INTEGER,
-    LearnDate TEXT NOT NULL DEFAULT(date('now')),
-    SuccessIndicator INTEGER NOT NULL,
-    FOREIGN KEY (ContentId) REFERENCES LearningContents(Id)
-);
-
-CREATE TABLE UserLearningRatings (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    UserId TEXT NOT NULL,
-    ContentId INTEGER NOT NULL,
-    ItemId INTEGER,
-    ScoreDate TEXT NOT NULL DEFAULT(date('now')),
-    Rating INTEGER NOT NULL,
-    FOREIGN KEY (ContentId) REFERENCES LearningContents(Id)
-);
-```
-
-### Migration from JSON
-
-On first startup, the application automatically migrates data from `AudioFiles/tts_map.json` to the SQLite database:
-
-1. Reads existing mappings from JSON file
-2. Inserts records into database (skipping duplicates)
-3. Renames `tts_map.json` → `tts_map.json.migrated` as backup
-4. Logs migration statistics
-
-Subsequent startups use the database directly.
+The application uses SQLite for persistent storage (`aclearningutil.db`, auto-created in the app root on first run). The schema, connection configuration, schema-evolution strategy, and first-run JSON migration are documented in [`docs/design-database.md`](docs/design-database.md).
 
 ## Configuration
 
@@ -390,12 +326,16 @@ aclearningutil.sln
 │   │   ├── LLMConversationMessage.cs
 │   │   ├── LLMReplyContent.cs
 │   │   └── FormatLLMInput.cs
-│   ├── Util/
-│   │   ├── LLMUtil.cs                             # LLM API utilities
-│   │   └── AliTokenUtil.cs                        # Aliyun token generation
 │   ├── AudioFiles/                                # Generated audio files (runtime)
 │   ├── Program.cs                                 # Application entry point
+│   ├── Utility/                                   # Utility classes (LLM, Aliyun token)
+│   │   ├── LLMUtil.cs                             # LLM API utilities
+│   │   └── AliTokenUtil.cs                        # Aliyun token generation
 │   └── aclearningutil.csproj
+├── src/Util/                                       # Standalone helpers (not compiled into the API)
+│   ├── add_learningcontent_columns.py              # DB schema patch helper
+│   ├── validate-schema.js                          # Node JSON-schema validator
+│   └── exercise-schema.json                        # JSON schema used by the validator
 └── test/
     ├── aclearningutil.test/                       # Unit tests (xUnit + Moq)
     └── aclearningutil.test.common/                # Shared test utilities

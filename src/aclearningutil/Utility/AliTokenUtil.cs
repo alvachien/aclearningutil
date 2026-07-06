@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-namespace aclearningutil.Util
+namespace aclearningutil.Utility
 {
     public class AliTokenDetail
     {

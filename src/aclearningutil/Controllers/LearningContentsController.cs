@@ -110,6 +110,7 @@ namespace aclearningutil.Controllers
             existing.NameChinese = content.NameChinese;
             existing.NameEnglish = content.NameEnglish;
             existing.FileUrl = content.FileUrl;
+            existing.Version = content.Version;
             existing.UpdatedAt = DateTime.UtcNow;
             await _dbContext.SaveChangesAsync(cancellationToken);
             return NoContent();
@@ -119,8 +120,33 @@ namespace aclearningutil.Controllers
         {
             if (string.IsNullOrWhiteSpace(fileUrl)) return false;
             if (fileUrl.Contains("..")) return false;
-            if (Path.IsPathRooted(fileUrl)) return false;
+            if (IsAbsoluteOrRootedPath(fileUrl)) return false;
             return true;
+        }
+
+        /// <summary>
+        /// Detects absolute/rooted paths consistently across Windows and Linux.
+        /// <see cref="Path.IsPathRooted(string)"/> is platform-dependent: on Linux it
+        /// only treats "/..." as rooted, so Windows-style paths like "C:\..." slip
+        /// through. This rejects them on every platform so validation matches in CI.
+        /// </summary>
+        private static bool IsAbsoluteOrRootedPath(string path)
+        {
+            if (path.Length == 0) return false;
+
+            // POSIX absolute or backslash-rooted: "/foo", "\foo" (also covers UNC "\\server\share")
+            if (path[0] == '/' || path[0] == '\\') return true;
+
+            // Windows drive-rooted: "C:\foo", "C:/foo"
+            if (path.Length >= 3
+                && char.IsAsciiLetter(path[0])
+                && path[1] == ':'
+                && (path[2] == '\\' || path[2] == '/'))
+            {
+                return true;
+            }
+
+            return false;
         }
 
         [HttpDelete("{id}")]

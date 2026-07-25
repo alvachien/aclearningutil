@@ -62,6 +62,8 @@ dotnet user-secrets set "DeepSeek:APIKey" "your-key"
 
 ## API Endpoints
 
+For the full controller reference (every route, parameter, validation rule, and response shape), see [`docs/design-controllers.md`](docs/design-controllers.md). It covers all controllers including `StorageController` (`GET /api/Storage/{subfolder}/{filename}`), which serves learning-content files and the per-word `learnenglish/word_references/<word>.json` reference files.
+
 ### TTS Controller
 
 #### GET /api/tts/details

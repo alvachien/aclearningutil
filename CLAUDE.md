@@ -31,6 +31,8 @@ The service is part of the broader H.I.H. (Home Information Hub) learning ecosys
 - `UserLearningHistoriesController.cs`: CRUD for user learning history (`[Authorize]`, user-scoped via JWT claims, supports `?contentId=&itemId=` search)
 - `UserLearningRatingsController.cs`: CRUD for user content ratings (`[Authorize]`, user-scoped via JWT claims, rating 1-5, supports `?contentId=&itemId=` search)
 
+For the full controller reference (every route, parameter, validation rule, and response shape), see [`docs/design-controllers.md`](docs/design-controllers.md). It covers all controllers including `StorageController` (`GET /api/Storage/{subfolder}/{filename}`), which serves learning-content files and the per-word `learnenglish/word_references/<word>.json` reference files.
+
 **Data Layer** (`Data/`)
 - `AppDbContext.cs`: EF Core DbContext for SQLite
 - `Entities/TtsMapping.cs`: Entity for TTS sentence-to-audio mappings

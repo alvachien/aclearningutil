@@ -131,6 +131,17 @@ using (var scope = app.Services.CreateScope())
     await EnsureColumnAsync(db, app.Logger, "LearningContents", "IncludeLatex", "INTEGER");
     await EnsureColumnAsync(db, app.Logger, "LearningContents", "TranslationDisabled", "INTEGER");
 
+    // Ensure the unique rating index exists on pre-existing databases. EnsureCreated()
+    // only creates a missing database; older DBs may also hold duplicate rating rows
+    // (a (UserId, ContentId, ItemId) triple rated more than once), which must be
+    // removed first — keep the most recently created row per triple.
+    await db.Database.ExecuteSqlRawAsync(
+        "DELETE FROM UserLearningRatings WHERE Id NOT IN (" +
+        "SELECT MAX(Id) FROM UserLearningRatings GROUP BY UserId, ContentId, ItemId);");
+    await db.Database.ExecuteSqlRawAsync(
+        "CREATE UNIQUE INDEX IF NOT EXISTS IX_UserLearningRatings_UserId_ContentId_ItemId " +
+        "ON UserLearningRatings (UserId, ContentId, ItemId);");
+
     // Seed LearningContentCategories (use INSERT OR IGNORE semantics for idempotent startup)
     var categories = new (int Id, string NameChinese, string NameEnglish)[]
     {

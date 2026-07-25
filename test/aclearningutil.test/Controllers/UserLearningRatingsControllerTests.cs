@@ -473,6 +473,98 @@ public class UserLearningRatingsControllerTests : IDisposable
         result.Result.Should().BeOfType<UnauthorizedObjectResult>();
     }
 
+    [Fact]
+    public async Task GetAll_Without_Paging_Returns_All_Ratings()
+    {
+        // Arrange - more rows than the old default page size (50): clients that
+        // fetch without paging parameters rely on receiving the complete list.
+        var content = await SeedContentAsync();
+        for (var i = 1; i <= 60; i++)
+        {
+            _context.UserLearningRatings.Add(new UserLearningRating
+            {
+                UserId = TestUserId,
+                ContentId = content.Id,
+                ItemId = i,
+                ScoreDate = DateTime.Today,
+                Rating = 3
+            });
+        }
+        await _context.SaveChangesAsync();
+
+        // Act
+        var result = await _controller.GetAll(content.Id, null, cancellationToken: CancellationToken.None);
+
+        // Assert
+        var ratings = result.Value;
+        ratings.Should().NotBeNull();
+        ratings.Should().HaveCount(60);
+    }
+
+    [Fact]
+    public async Task GetAll_With_Explicit_Paging_Still_Paginates()
+    {
+        // Arrange
+        var content = await SeedContentAsync();
+        for (var i = 1; i <= 60; i++)
+        {
+            _context.UserLearningRatings.Add(new UserLearningRating
+            {
+                UserId = TestUserId,
+                ContentId = content.Id,
+                ItemId = i,
+                ScoreDate = DateTime.Today,
+                Rating = 3
+            });
+        }
+        await _context.SaveChangesAsync();
+
+        // Act
+        var result = await _controller.GetAll(content.Id, null, page: 2, pageSize: 50, cancellationToken: CancellationToken.None);
+
+        // Assert
+        var ratings = result.Value;
+        ratings.Should().NotBeNull();
+        ratings.Should().HaveCount(10);
+    }
+
+    [Fact]
+    public async Task Create_Existing_Triple_Updates_Instead_Of_Duplicating()
+    {
+        // Arrange - a rating row already exists for (user, content, item); a
+        // second POST for the same triple must update it, not add another row.
+        var content = await SeedContentAsync();
+        _context.UserLearningRatings.Add(new UserLearningRating
+        {
+            UserId = TestUserId,
+            ContentId = content.Id,
+            ItemId = 1,
+            ScoreDate = DateTime.Today,
+            Rating = 3
+        });
+        await _context.SaveChangesAsync();
+
+        var duplicate = new UserLearningRating
+        {
+            ContentId = content.Id,
+            ItemId = 1,
+            Rating = 5
+        };
+
+        // Act
+        var result = await _controller.Create(duplicate, CancellationToken.None);
+
+        // Assert
+        var okResult = result.Result as OkObjectResult;
+        okResult.Should().NotBeNull();
+        (okResult!.Value as UserLearningRating)!.Rating.Should().Be(5);
+        var rows = _context.UserLearningRatings
+            .Where(r => r.UserId == TestUserId && r.ContentId == content.Id && r.ItemId == 1)
+            .ToList();
+        rows.Should().HaveCount(1);
+        rows[0].Rating.Should().Be(5);
+    }
+
     public void Dispose()
     {
         _context.Dispose();

@@ -88,6 +88,9 @@ public class AppDbContext : DbContext
 
             entity.HasIndex(e => e.UserId);
             entity.HasIndex(e => e.ContentId);
+            // One rating row per user/content/item triple; guards against
+            // duplicate rows from concurrent create requests.
+            entity.HasIndex(e => new { e.UserId, e.ContentId, e.ItemId }).IsUnique();
 
             entity.HasOne(e => e.Content)
                 .WithMany()

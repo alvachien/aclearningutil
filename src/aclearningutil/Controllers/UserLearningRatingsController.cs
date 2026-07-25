@@ -52,12 +52,19 @@ namespace aclearningutil.Controllers
                 query = query.Where(r => r.ItemId == itemId.Value);
             }
 
-            // Apply pagination
-            const int maxPageSize = 200;
-            var skip = ((page ?? 1) - 1) * Math.Clamp(pageSize ?? 50, 1, maxPageSize);
-            var take = Math.Clamp(pageSize ?? 50, 1, maxPageSize);
+            // Apply pagination only when explicitly requested. Without paging
+            // parameters the full filtered list is returned — clients cache the
+            // result as the complete rating set, so silently truncating to a
+            // default page would make older ratings disappear after reload.
+            if (page.HasValue || pageSize.HasValue)
+            {
+                const int maxPageSize = 200;
+                var skip = ((page ?? 1) - 1) * Math.Clamp(pageSize ?? 50, 1, maxPageSize);
+                var take = Math.Clamp(pageSize ?? 50, 1, maxPageSize);
+                query = query.Skip(skip).Take(take);
+            }
 
-            var ratings = await query.OrderByDescending(r => r.ScoreDate).Skip(skip).Take(take).ToListAsync(cancellationToken);
+            var ratings = await query.OrderByDescending(r => r.ScoreDate).ToListAsync(cancellationToken);
             return ratings;
         }
 
@@ -105,6 +112,19 @@ namespace aclearningutil.Controllers
             if (rating.ScoreDate == default)
             {
                 rating.ScoreDate = DateTime.Today;
+            }
+
+            // A (UserId, ContentId, ItemId) triple can only have one rating row.
+            // If it already exists — e.g. two rapid client requests both missed
+            // the existing record — update it instead of failing on the unique index.
+            var existing = await _dbContext.UserLearningRatings
+                .FirstOrDefaultAsync(r => r.UserId == userId && r.ContentId == rating.ContentId && r.ItemId == rating.ItemId, cancellationToken);
+            if (existing != null)
+            {
+                existing.Rating = rating.Rating;
+                existing.ScoreDate = rating.ScoreDate;
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return Ok(existing);
             }
 
             _dbContext.UserLearningRatings.Add(rating);

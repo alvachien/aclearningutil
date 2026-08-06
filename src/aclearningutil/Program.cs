@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
@@ -8,6 +9,7 @@ using Serilog;
 using Serilog.Events;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using aclearningutil.Authorization;
 using aclearningutil.Data;
 using aclearningutil.Data.Entities;
 using aclearningutil.Models;
@@ -80,6 +82,22 @@ builder.Services.AddAuthentication("Bearer")
             ValidAudience = "api.knowledgebuilder"
         };
     });
+// Authorization - admin allowlist for catalog-mutating endpoints (H1).
+// "Admin:UserIds" holds the "sub" claim values of users permitted to
+// create/update/delete shared LearningContents. Empty = fail closed (no admin).
+// Extraction uses ClaimTypes.NameIdentifier with a "sub" fallback, matching the
+// user-scoped controllers (see Shared auth contract in CLAUDE.md).
+var adminUserIds = builder.Configuration.GetSection("Admin:UserIds")
+    .Get<string[]>()
+    ?.Where(id => !string.IsNullOrWhiteSpace(id))
+    .Select(id => id.Trim())
+    .ToArray() ?? Array.Empty<string>();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("RequireAdmin", policy =>
+        policy.Requirements.Add(new AdminUserRequirement(adminUserIds)));
+});
+builder.Services.AddSingleton<IAuthorizationHandler, AdminUserAuthorizationHandler>();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

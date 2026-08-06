@@ -161,7 +161,7 @@ Configured in `Program.cs`. Currently allows:
 ## External Dependencies
 
 ### Aliyun TTS API
-- Endpoint: `http://nls-gateway.aliyuncs.com/stream/v1/tts`
+- Endpoint: `https://nls-gateway.aliyuncs.com/stream/v1/tts`
 - Requires: API Key, Access Key, Access Secret, and temporary token
 - Token generation: `AliTokenUtil.getToken()`
 
@@ -241,15 +241,15 @@ GitHub Actions (`.github/workflows/build-test.yml`) restores, builds (`Release`)
 
 ## Code Quality Standards
 
-This project maintains:
-- ✅ Zero compiler warnings
-- ✅ No blocking async calls
-- ✅ Proper resource disposal
-- ✅ Thread-safe HTTP client usage
-- ✅ Comprehensive null checking
-- ✅ Async file I/O operations
+This project aims for (a maintained standard, not yet enforced by CI - `TreatWarningsAsErrors` is not set):
+- Zero compiler warnings (one analyzer rule, `EF1003`, is intentionally suppressed for the hard-coded internal SQL in `Program.cs`)
+- No blocking async calls (no `.Result` / `.Wait()`)
+- Proper resource disposal (`HttpRequestMessage` / `FileStream` via `using`; a few `HttpResponseMessage` instances are not yet disposed - known minor gap)
+- Thread-safe HTTP client usage (per-request `HttpRequestMessage`, no shared `DefaultRequestHeaders` mutation)
+- Comprehensive null checking (nullable reference types enabled)
+- Async file I/O operations
 
-When making changes, maintain these standards. Run `dotnet build` to verify zero warnings.
+When making changes, maintain these standards. Run `dotnet build` to verify warnings.
 
 ## Troubleshooting
 

@@ -437,6 +437,44 @@ for the content format and generation workflow.
 
 ---
 
+## 9. `WordAudioController`
+
+**File**: [`WordAudioController.cs`](../src/aclearningutil/Controllers/WordAudioController.cs)
+**Route**: `api/WordAudio`
+**Auth**: `[Authorize]`
+
+Serves per-word pronunciation audio looked up in `Storage/words.db` and streamed
+from `Storage/wordaudio/`. The UI vocabulary study/typing/dictation modes call
+this instead of browser TTS for words that have recorded audio, falling back to
+`speechSynthesis` on `404`. Not rate-limited - it is a local file read with no
+external-API spend, unlike `TTSController`.
+
+### `GET api/WordAudio`
+
+| Parameter | Source | Type | Required | Description |
+|---|---|---|---|---|
+| `word` | query | string | yes | The word/phrase to look up, e.g. `hello` or `add ... to ...`. Case-insensitive (`COLLATE NOCASE`). |
+
+**Behavior**:
+- Opens `Storage/words.db` read-only and runs `SELECT us_audio, uk_audio FROM words WHERE word = @word COLLATE NOCASE LIMIT 1`.
+- Prefers `us_audio`; falls back to `uk_audio` when US is absent. (Today all rows carry only US audio.)
+- The DB stores a relative path like `wordaudio/France.f5cd26.mp3`; only the basename is used and must end in `.mp3`. A `Path.GetFullPath` check confirms the resolved path stays inside `Storage/wordaudio/`.
+- Response carries `Cache-Control: public, max-age=86400` (1 day).
+
+**Responses**:
+- `200 OK` -> `FileResult` (`audio/mpeg`).
+- `404 NotFound` - blank word; `words.db` missing; word unknown; word has no audio; or the audio file is absent on disk.
+
+`words.db` and `wordaudio/` are authored by `fetch_word.py` in the
+`knowledgebuilder-content` repo and copied into `Storage/` at deploy time by
+`publish-learning-all.ps1` (see
+[`knowledgebuilder-content/util/how-to-use.md`](../../knowledgebuilder-content/util/how-to-use.md)).
+In dev, populate `src/aclearningutil/Storage/` with `words.db` and `wordaudio/`
+copied from `knowledgebuilder-content/util/` - the `Storage/` folder is
+gitignored and populated manually (same convention as the five content folders).
+
+---
+
 ## Endpoint Summary
 
 | Method | Route | Auth | Rate-limited | Description |
@@ -462,3 +500,4 @@ for the content format and generation workflow.
 | POST | `api/FormatLLM/AskAnything` | yes | yes | Subject LLM Q&A |
 | GET | `api/EnglishLLM/details` | yes | yes | English LLM Q&A |
 | GET | `api/Storage/{subfolder}/{filename}` | yes | no | Serve Storage file |
+| GET | `api/WordAudio` | yes | no | Per-word pronunciation audio (words.db) |

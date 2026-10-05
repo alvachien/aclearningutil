@@ -10,10 +10,12 @@ This document describes the SQLite database schema for the **aclearningutil** pr
 - **Connection string**: configured in `Program.cs` as `Data Source={path}`
 - **Auto-migration**: on first run, TTS mappings are migrated from `AudioFiles/tts_map.json` if present
 
-The database contains five tables organized around two concerns:
+The database contains five content tables organized around two concerns:
 
 1. **TTS caching** — `TtsMappings` maps a sentence to a generated audio file.
 2. **Learning content & user activity** — categories, content items, per-user history, and per-user ratings.
+
+The habit-tracking feature adds eleven further tables (`Habits` and friends) — documented in § Habit-Tracking Tables below and in [`design-habit-api.md`](design-habit-api.md).
 
 ## Entity Relationship Diagram
 
@@ -247,13 +249,51 @@ CREATE INDEX IX_UserLearningRatings_UserId ON UserLearningRatings (UserId);
 CREATE INDEX IX_UserLearningRatings_ContentId ON UserLearningRatings (ContentId);
 ```
 
+### 6. `UserLoginHistories`
+
+Per-day login history, one row per user per server-local calendar day, upserted by `POST /api/UserLoginHistories` when the SPA completes an OIDC sign-in (see [`design-controllers.md`](design-controllers.md) §15). Standalone — no foreign keys; `UserId` comes from the JWT, there is no local users table.
+
+| Column | Type | Nullable | Default | Constraints |
+|---|---|---|---|---|
+| `Id` | INTEGER | No | — | Primary Key, autoincrement |
+| `UserId` | TEXT | No | — | Required, max length 200 |
+| `LoginDate` | TEXT | No | — | Server-local calendar day (`yyyy-MM-dd`, `DateOnly`) |
+| `FirstLoginAt` | TEXT | No | — | UTC instant; read converter restores `Kind=Utc` |
+| `LastLoginAt` | TEXT | No | — | UTC instant; same converter |
+| `LoginCount` | INTEGER | No | — | Sign-ins recorded on that day |
+
+**Indexes**
+- `IX_UserLoginHistories_UserId_LoginDate` — UNIQUE on `(UserId, LoginDate)`; guards the POST's upsert and doubles as the tenant-scoped GET's access path (no separate `UserId` index needed). Like every model object, the table and index reach pre-existing databases through the schema bootstrap's generic Phase-1 `CREATE ... IF NOT EXISTS` replay.
+
+**Entity**: [`UserLoginHistory.cs`](../src/aclearningutil/Data/Entities/UserLoginHistory.cs)
+
+```sql
+CREATE TABLE UserLoginHistories (
+    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+    UserId TEXT NOT NULL,
+    LoginDate TEXT NOT NULL,
+    FirstLoginAt TEXT NOT NULL,
+    LastLoginAt TEXT NOT NULL,
+    LoginCount INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IX_UserLoginHistories_UserId_LoginDate ON UserLoginHistories (UserId, LoginDate);
+```
+
+## Habit-Tracking Tables
+
+The habit-tracking feature (see [`design-habit-api.md`](design-habit-api.md)) adds eleven more tables to this database — `Habits`, `HabitShareGrants`, `HabitItems`, `ItemProperties`, `Criteria`, `CriterionLeaves` (+ `CriterionLeafScopeItems`), `CriterionComposites` (+ `CriterionCompositeOperands`), `Punches`, `PunchValues` — with their own per-user `OwnerId` tenant column. The full per-table column/index/FK listing lives in `design-habit-api.md` § Data Model; the index inventory for `Punches` is:
+
+- `IX_Punches_HabitId_PunchDate` — on `(HabitId, PunchDate)`
+- `IX_Punches_ItemId_PunchDate` — on `(ItemId, PunchDate)`
+- `IX_Punches_OwnerId` — on `OwnerId` (tenant-key filter; added to the EF model with the habit work and rolled out to pre-existing databases by the schema bootstrap's Phase-1 `CREATE INDEX IF NOT EXISTS` replay)
+
 ## Conventions & Notes
 
 - **Primary keys**: `Id` is an autoincrement INTEGER for all tables except `LearningContentCategories`, where it is manually assigned to keep the seeded category IDs stable.
 - **Date/time storage**: SQLite stores datetimes as TEXT. `CreatedAt`/`UpdatedAt` default to `datetime('now')` (full timestamp); `LearnDate`/`ScoreDate` default to `date('now')` (date only).
 - **Booleans**: EF Core maps `bool` to INTEGER (0/1) in SQLite (`SuccessIndicator`, and the nullable `IncludeLatex` / `TranslationDisabled` on `LearningContents`).
 - **Foreign-key behavior**: all FKs use `OnDelete: Restrict`, so deleting a `LearningContent` that still has history/rating rows, or a `LearningContentCategory` that still has content rows, is prevented at the EF level. (Note: SQLite does not enforce FKs unless `PRAGMA foreign_keys = ON` is set; EF Core's `Restrict` is enforced through the EF change tracker.)
-- **User scoping**: `UserLearningHistories` and `UserLearningRatings` are scoped per-user via `UserId`, which comes from the authenticated JWT — there is no local `Users` table.
+- **User scoping**: `UserLearningHistories`, `UserLearningRatings` and `UserLoginHistories` are scoped per-user via `UserId`, which comes from the authenticated JWT — there is no local `Users` table.
 - **Max-length constraints** (`HasMaxLength`) translate to EF Core metadata and are enforced in the application layer; SQLite itself does not enforce TEXT length limits.
 
 ## Modifying the Schema
@@ -262,7 +302,7 @@ This project does **not** use EF Core migrations. The schema is created on start
 
 1. Add the column to the entity class in `src/aclearningutil/Data/Entities/`.
 2. Configure it in `OnModelCreating()` in `src/aclearningutil/Data/AppDbContext.cs`.
-3. Add an `EnsureColumnAsync(...)` call in `Program.cs` so startup runs `ALTER TABLE ... ADD COLUMN` for the new nullable column on pre-existing databases — mirror exactly what `EnsureCreated` would have created (e.g. `INTEGER` for bool/byte columns). This is how `IncludeLatex` and `TranslationDisabled` were added.
+3. Add an `EnsureColumnAsync(...)` call in `Program.cs` so startup runs `ALTER TABLE ... ADD COLUMN` for the new nullable column on pre-existing databases — mirror exactly what `EnsureCreated` would have created (e.g. `INTEGER` for bool/byte columns). This is how `IncludeLatex` and `TranslationDisabled` were added. **New tables** (e.g. `HabitShareGrants`) instead go through `HabitSchemaBootstrap` automatically: its Phase-1 replay of the EF create script (`CREATE ... IF NOT EXISTS`) materializes missing tables on existing databases — no `ALTER` or `EnsureColumnAsync` involved.
 4. For a fresh database, just delete `aclearningutil.db` and let `EnsureCreated` recreate it (loses data).
 
 A standalone helper, [`src/Util/add_learningcontent_columns.py`](../src/Util/add_learningcontent_columns.py), applies the same `ALTER TABLE` patch with a `.bak` backup and idempotent re-runs, for manually patching a deployed database outside the app.

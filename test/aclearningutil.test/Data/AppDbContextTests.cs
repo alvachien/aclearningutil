@@ -53,10 +53,12 @@ public class AppDbContextTests : IDisposable
         result!.FileName.Should().Be("test2.wav");
     }
 
-    [Fact(Skip = "InMemory provider doesn't enforce unique constraints - this is tested with SQLite")]
+    [Fact]
     public async Task Sentence_Should_Be_Unique()
     {
-        // Note: This test would work with SQLite but InMemory doesn't enforce unique constraints
+        // The test database is REAL SQLite (shared-cache in-memory — see TestDbContextFactory),
+        // so the IX_TtsMappings_Sentence unique index is enforced exactly as in production;
+        // the old "InMemory provider" skip is obsolete and was re-enabled (review A-L6).
         // Arrange
         var mapping1 = new TtsMapping { Sentence = "Unique sentence", FileName = "file1.wav", CreatedAt = DateTime.UtcNow };
         var mapping2 = new TtsMapping { Sentence = "Unique sentence", FileName = "file2.wav", CreatedAt = DateTime.UtcNow };
@@ -68,6 +70,7 @@ public class AppDbContextTests : IDisposable
         _context.TtsMappings.Add(mapping2);
         var exception = await Assert.ThrowsAsync<DbUpdateException>(() => _context.SaveChangesAsync());
         exception.Should().NotBeNull();
+        exception.InnerException.Should().BeAssignableTo<Microsoft.Data.Sqlite.SqliteException>();
     }
 
     [Fact]

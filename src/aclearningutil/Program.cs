@@ -15,7 +15,7 @@ using aclearningutil.Models;
 // Creation
 var builder = WebApplication.CreateBuilder(args);
 // Logs
-if(builder.Environment.IsDevelopment())
+if (builder.Environment.IsDevelopment())
 {
     builder.Host.UseSerilog((context, config) =>
     {
@@ -24,7 +24,7 @@ if(builder.Environment.IsDevelopment())
              .WriteTo.Console();
     });
 }
-else if(builder.Environment.IsProduction())
+else if (builder.Environment.IsProduction())
 {
     builder.Host.UseSerilog((context, config) =>
     {
@@ -63,7 +63,17 @@ builder.Services.AddCors(options =>
                       });
 });
 // Controller
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Habit-tracking enums serialize on the wire as the spec's lowercase/snake values
+        // ("daily", "per_cycle", "boolean", ...) and integers are rejected outright.
+        // No other DTO in this API has enum properties, so the converter is inert for the
+        // existing controllers. See Utility/HabitJsonOptions.cs.
+        aclearningutil.Utility.HabitJsonOptions.ConfigureEnumConverters(options.JsonSerializerOptions);
+    });
+// Habit-tracking services (see Controllers/HabitsController.cs and docs/design-habit-api.md)
+builder.Services.AddScoped<aclearningutil.Services.HabitEvaluationService>();
 // Authentication - JWT Bearer
 builder.Services.AddAuthentication("Bearer")
     .AddJwtBearer("Bearer", options =>
@@ -130,6 +140,10 @@ using (var scope = app.Services.CreateScope())
 
     await EnsureColumnAsync(db, app.Logger, "LearningContents", "IncludeLatex", "INTEGER");
     await EnsureColumnAsync(db, app.Logger, "LearningContents", "TranslationDisabled", "INTEGER");
+
+    // Ensure the habit-tracking tables exist on pre-existing databases (EnsureCreated()
+    // does not add tables to an already-created DB). Idempotent; see Utility/HabitSchemaBootstrap.cs.
+    await aclearningutil.Utility.HabitSchemaBootstrap.EnsureTablesAsync(db, app.Logger);
 
     // Ensure the unique rating index exists on pre-existing databases. EnsureCreated()
     // only creates a missing database; older DBs may also hold duplicate rating rows

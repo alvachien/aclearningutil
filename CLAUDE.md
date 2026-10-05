@@ -28,8 +28,11 @@ The service is part of the broader H.I.H. (Home Information Hub) learning ecosys
 - `EnglishLLMController.cs`: English language learning assistant (`[Authorize]`)
 - `LearningContentCategoriesController.cs`: Read-only listing of learning content categories (public, no auth required)
 - `LearningContentsController.cs`: CRUD for learning content items (`[Authorize]`)
+- `HabitsController.cs` + `HabitItems/HabitCriteria/HabitPunches/ItemProperties` controllers: habit-tracking API, strictly owner-scoped; `Habits` also hosts the owner-only `{id}/Shares` invitation CRUD (`GET`/`POST`/`DELETE`, `[Authorize]`, see `docs/design-habit-api.md`)
+- `SharedHabitsController.cs`: READ-ONLY "shared with me" surface (`GET /api/SharedHabits[/{id}][/History]`) — visible only to users with a `HabitShareGrant` (or the owner); the deliberate FR-6 exception; non-invited/unknown ids 404; no write endpoints
 - `UserLearningHistoriesController.cs`: CRUD for user learning history (`[Authorize]`, user-scoped via JWT claims, supports `?contentId=&itemId=` search)
 - `UserLearningRatingsController.cs`: CRUD for user content ratings (`[Authorize]`, user-scoped via JWT claims, rating 1-5, supports `?contentId=&itemId=` search)
+- `UserLoginHistoriesController.cs`: per-day login history (`[Authorize]`, user-scoped; `POST` upserts today's row — called by the SPA on completed OIDC sign-in; `GET ?from=&to=` lists the caller's days, default trailing 90; no PUT/DELETE)
 
 For the full controller reference (every route, parameter, validation rule, and response shape), see [`docs/design-controllers.md`](docs/design-controllers.md). It covers all controllers including `StorageController` (`GET /api/Storage/{subfolder}/{filename}`), which serves learning-content files and the per-word `learnenglish/word_references/<word>.json` reference files.
 
@@ -40,6 +43,7 @@ For the full controller reference (every route, parameter, validation rule, and 
 - `Entities/LearningContent.cs`: Learning content items (FK to category; optional `Version`, `IncludeLatex`, `TranslationDisabled` fields)
 - `Entities/UserLearningHistory.cs`: User learning history (FK to content, user-scoped)
 - `Entities/UserLearningRating.cs`: User content ratings (FK to content, user-scoped, rating byte 1-5)
+- `Entities/UserLoginHistory.cs`: Per-day login history (one row per user per server-local day, unique `(UserId, LoginDate)`; first/last UTC instants + count)
 - Database schema includes unique index on `Sentence` for fast lookups
 
 **Utilities** (`src/aclearningutil/Utility/`)

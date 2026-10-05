@@ -120,12 +120,27 @@ public class UserLearningRatingsControllerTests : IDisposable
     [Fact]
     public async Task GetAll_With_ItemId_Filter_Returns_Filtered_Ratings()
     {
-        // Arrange
+        // Arrange — the unique index (UserId, ContentId, ItemId) forbids two
+        // ratings for one triple (the old EF InMemory provider silently accepted
+        // it); the item filter must therefore match across two contents.
         var content = await SeedContentAsync();
+        var content2 = new LearningContent
+        {
+            Id = 101,
+            CategoryId = 100,
+            NameChinese = "内容2",
+            NameEnglish = "Content2",
+            FileUrl = "url2",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+        _context.LearningContents.Add(content2);
+        await _context.SaveChangesAsync();
+
         _context.UserLearningRatings.AddRange(
             new UserLearningRating { UserId = TestUserId, ContentId = content.Id, ItemId = 1, ScoreDate = DateTime.Today, Rating = 5 },
             new UserLearningRating { UserId = TestUserId, ContentId = content.Id, ItemId = 2, ScoreDate = DateTime.Today, Rating = 3 },
-            new UserLearningRating { UserId = TestUserId, ContentId = content.Id, ItemId = 1, ScoreDate = DateTime.Today, Rating = 4 }
+            new UserLearningRating { UserId = TestUserId, ContentId = content2.Id, ItemId = 1, ScoreDate = DateTime.Today, Rating = 4 }
         );
         await _context.SaveChangesAsync();
 

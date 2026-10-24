@@ -55,6 +55,7 @@ namespace aclearningutil.Controllers
         }
 
         [HttpPost]
+        [Authorize(Policy = "RequireAdmin")]
         public async Task<ActionResult<LearningContent>> Create([FromBody] LearningContent content, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(content.NameChinese) || string.IsNullOrWhiteSpace(content.NameEnglish))
@@ -82,6 +83,7 @@ namespace aclearningutil.Controllers
         }
 
         [HttpPut("{id}")]
+        [Authorize(Policy = "RequireAdmin")]
         public async Task<IActionResult> Update(int id, [FromBody] LearningContent content, CancellationToken cancellationToken)
         {
             var existing = await _dbContext.LearningContents.FindAsync(id, cancellationToken);
@@ -150,6 +152,7 @@ namespace aclearningutil.Controllers
         }
 
         [HttpDelete("{id}")]
+        [Authorize(Policy = "RequireAdmin")]
         public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
         {
             var content = await _dbContext.LearningContents.FindAsync(id, cancellationToken);

@@ -93,23 +93,23 @@ namespace aclearningutil.Controllers
                 return BadRequest("File type not allowed.");
             }
 
-            // Build full path
-            var storageFolder = Path.Combine(_environment.ContentRootPath, "Storage");
-            var fullPath = Path.Combine(storageFolder, subfolder, filename);
-
-            // Verify the resolved path is within the storage folder (extra safety check)
-            var fullStoragePath = Path.GetFullPath(storageFolder);
-            var fullFilePath = Path.GetFullPath(fullPath);
-            if (!fullFilePath.StartsWith(fullStoragePath))
-            {
-                _logger.LogWarning("Path traversal blocked: resolved path {ResolvedPath} is outside storage folder {StoragePath}",
-                    fullFilePath, fullStoragePath);
-                return BadRequest("Invalid path.");
-            }
-
-            if (!System.IO.File.Exists(fullPath))
+            // Resolve the request against the actual Storage entries, segment by
+            // segment, so the OrdinalIgnoreCase contract holds on case-sensitive
+            // file systems (Linux) too — not just on Windows.
+            var storageFolder = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, "Storage"));
+            var segments = new[] { subfolder }.Concat(filename.Split('/')).ToArray();
+            var fullPath = ResolveStorageFile(storageFolder, segments);
+            if (fullPath is null)
             {
                 return NotFound();
+            }
+
+            // Verify the resolved path is within the storage folder (extra safety check)
+            if (!fullPath.StartsWith(storageFolder, StringComparison.Ordinal))
+            {
+                _logger.LogWarning("Path traversal blocked: resolved path {ResolvedPath} is outside storage folder {StoragePath}",
+                    fullPath, storageFolder);
+                return BadRequest("Invalid path.");
             }
 
             // Determine content type
@@ -127,6 +127,46 @@ namespace aclearningutil.Controllers
             Response.Headers.Append("Cache-Control", "public, max-age=3600"); // 1 hour
 
             return File(fileStream, contentType);
+        }
+
+        /// <summary>
+        /// Resolves path segments under the Storage folder one at a time. An exact
+        /// on-disk match wins; otherwise the segment is matched case-insensitively
+        /// against the directory's actual entries, so e.g. "LEARNENGLISH/Words.JSON"
+        /// resolves to "learnenglish/words.json" on case-sensitive file systems as
+        /// well. Returns the full path of the existing file, or null when a segment
+        /// is missing, a non-final segment is not a directory, or the final segment
+        /// is not a file.
+        /// </summary>
+        private static string? ResolveStorageFile(string storageFolder, IReadOnlyList<string> segments)
+        {
+            var current = storageFolder;
+            for (var i = 0; i < segments.Count; i++)
+            {
+                var isLast = i == segments.Count - 1;
+                var candidate = Path.Combine(current, segments[i]);
+                if (isLast ? System.IO.File.Exists(candidate) : Directory.Exists(candidate))
+                {
+                    current = candidate;
+                    continue;
+                }
+
+                if (!Directory.Exists(current))
+                {
+                    return null;
+                }
+
+                var match = Directory.EnumerateFileSystemEntries(current)
+                    .FirstOrDefault(entry => string.Equals(Path.GetFileName(entry), segments[i], StringComparison.OrdinalIgnoreCase));
+                if (match is null || (isLast ? !System.IO.File.Exists(match) : !Directory.Exists(match)))
+                {
+                    return null;
+                }
+
+                current = match;
+            }
+
+            return current;
         }
     }
 }

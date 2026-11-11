@@ -119,6 +119,19 @@ public class StorageControllerTests : IDisposable
         result.Should().BeAssignableTo<FileResult>();
     }
 
+    [Fact]
+    public void CaseNormalizationResolvesEverySegmentOnCaseSensitiveFileSystems()
+    {
+        // The listening-audio shape: subfolder + inner folder + file, all upper-cased.
+        // On Linux the OS will not case-fold these, so the controller must walk the
+        // real directory entries itself (regression: CI-only 404 on "LEARNENGLISH/...").
+        CreateFile("englishlistening/ltt1_mp3/unit01.mp3");
+
+        var result = GetFileAndDrain("ENGLISHLISTENING/LTT1_MP3/UNIT01.MP3");
+
+        result.Should().BeAssignableTo<FileResult>();
+    }
+
     // ── traversal rejection ────────────────────────────────────────────────
 
     [Theory]

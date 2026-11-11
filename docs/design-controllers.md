@@ -330,7 +330,7 @@ Serves static learning-content files from the `Storage/` folder with authenticat
 - Must split into exactly `subfolder/filename`.
 - `subfolder` must be in the allow-list: `learnenglish`, `learnchinese`, `knowledge-exercises`, `englishlistening`, `formula`.
 - File extension must be in the allow-list: `.json`, `.png`, `.jpg`, `.jpeg`, `.mp3`.
-- A final `Path.GetFullPath` check confirms the resolved path stays inside `Storage/`.
+- The path is resolved segment-by-segment against the actual `Storage/` entries: an exact match wins, otherwise each segment is matched case-insensitively — so `LEARNENGLISH/Words.JSON` serves `learnenglish/words.json` on case-sensitive file systems (Linux CI) as well as Windows. A final containment check confirms the resolved path stays inside `Storage/`.
 - Response carries `Cache-Control: public, max-age=3600` (1 hour).
 
 **Responses**:

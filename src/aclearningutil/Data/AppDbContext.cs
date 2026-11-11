@@ -11,9 +11,10 @@ public class AppDbContext : DbContext
     public DbSet<TtsMapping> TtsMappings => Set<TtsMapping>();
     public DbSet<LearningContentCategory> LearningContentCategories => Set<LearningContentCategory>();
     public DbSet<LearningContent> LearningContents => Set<LearningContent>();
-    public DbSet<UserLearningHistory> UserLearningHistories => Set<UserLearningHistory>();
     public DbSet<UserLearningRating> UserLearningRatings => Set<UserLearningRating>();
     public DbSet<UserLoginHistory> UserLoginHistories => Set<UserLoginHistory>();
+    public DbSet<UserLearningTime> UserLearningTimes => Set<UserLearningTime>();
+    public DbSet<LeaderboardPreference> LeaderboardPreferences => Set<LeaderboardPreference>();
 
     // Habit tracking (see docs/design-habit-api.md)
     public DbSet<Habit> Habits => Set<Habit>();
@@ -77,21 +78,8 @@ public class AppDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
-        modelBuilder.Entity<UserLearningHistory>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.UserId).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.ContentId).IsRequired();
-            entity.Property(e => e.LearnDate).HasDefaultValueSql("date('now')");
-
-            entity.HasIndex(e => e.UserId);
-            entity.HasIndex(e => e.ContentId);
-
-            entity.HasOne(e => e.Content)
-                .WithMany()
-                .HasForeignKey(e => e.ContentId)
-                .OnDelete(DeleteBehavior.Restrict);
-        });
+        // NOTE: UserLearningHistory (per-item study log, never wired to a client) was
+        // retired on 2026-10-25; Program.cs drops its table from pre-existing databases.
 
         modelBuilder.Entity<UserLearningRating>(entity =>
         {
@@ -352,6 +340,33 @@ public class AppDbContext : DbContext
             // so no separate HasIndex(UserId) is declared. The table and this index reach
             // pre-existing databases via the schema bootstrap's generic Phase-1 DDL replay.
             entity.HasIndex(e => new { e.UserId, e.LoginDate }).IsUnique();
+        });
+
+        // ── Learning time (one row per user+day+category; POST upserts it) ────────────
+        modelBuilder.Entity<UserLearningTime>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.UserId).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.UserName).HasMaxLength(200);
+            entity.Property(e => e.LastBeatAt).HasConversion(utcTimestampRead);
+
+            // One row per user+day+category; the unique index guards the heartbeat's
+            // read-then-write upsert (same Serializable-transaction pattern as the login
+            // history) and serves the tenant-scoped GET. Like the login history's index,
+            // it reaches pre-existing databases via the Phase-1 DDL replay.
+            entity.HasIndex(e => new { e.UserId, e.LearnDate, e.CategoryId }).IsUnique();
+        });
+
+        // ── Leaderboard preferences (one optional row per user; absence = visible) ──
+        modelBuilder.Entity<LeaderboardPreference>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.UserId).IsRequired().HasMaxLength(200);
+
+            // One preference row per user; also the leaderboard's exclusion
+            // sub-query's access path. Reaches pre-existing databases via the
+            // Phase-1 DDL replay.
+            entity.HasIndex(e => e.UserId).IsUnique();
         });
     }
 }

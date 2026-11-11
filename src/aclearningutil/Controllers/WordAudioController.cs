@@ -84,7 +84,10 @@ public class WordAudioController : ControllerBase
         }
 
         var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        Response.Headers.Append("Cache-Control", "public, max-age=86400"); // 1 day
+        // 30 days: the MP3 library is replaced only at deploy time, so a long TTL
+        // keeps repeat study sessions off the API. Trade-off: a replaced file is
+        // picked up at most 30 days after the client first cached it.
+        Response.Headers.Append("Cache-Control", "public, max-age=2592000");
         return File(stream, "audio/mpeg");
     }
 

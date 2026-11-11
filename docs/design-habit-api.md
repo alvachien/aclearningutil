@@ -2,12 +2,13 @@
 
 ## Overview
 
-This document adapts the standalone `habit-api` (Python/FastAPI) from `../habit-tracker-v0.3.13/docs/api-design.md` into the **existing `aclearningutil` project**. Habit tracking becomes a new functional area of the learning API — a set of `Habit*` controllers, an EF Core entity model, and application services — rather than a separate service.
+This document is the **implementation-level companion** for the habit-tracking functional area of `aclearningutil` — a set of `Habit*` controllers, an EF Core entity model, and application services (the feature was originally adapted out of a standalone Python/FastAPI `habit-api` prototype; that prototype and its design doc are retired).
 
+- **Canonical as-built API reference**: [`../../docs/habit-tracker-api-design.md`](../../docs/habit-tracker-api-design.md) — routes, DTOs, error codes, evaluation rules. Start there.
 - Functional requirements: [`../../docs/habit-tracker-functional-spec.md`](../../docs/habit-tracker-functional-spec.md) (EN) / [CN](../../docs/habit-tracker-functional-spec-cn.md)
-- Reference API design (superseded by this doc): `habit-tracker-v0.3.13/docs/api-design.md`
+- Full per-route listing also mirrored in [`design-controllers.md`](./design-controllers.md) § Habit chapters.
 
-All functional behavior (habit model, properties, success criteria, punch semantics, cycle windows, error codes) is preserved from the reference design. The differences are: technology stack, routing prefix, wire-format casing conventions, tenant-ID claim mapping, JWT validation infrastructure, and deployment model — each called out below.
+Where this doc and the canonical reference overlap, they must agree; this doc carries the extra implementation texture (EF mapping details, schema bootstrap, file layout, deviations from the old reference stack) that the canonical reference deliberately omits. Functional behavior (habit model, properties, success criteria, punch semantics, cycle windows, error codes) was preserved from the reference design, with differences in: technology stack, routing prefix, wire-format casing conventions, tenant-ID claim mapping, JWT validation infrastructure, and deployment model — each called out below.
 
 ## Tech Stack Mapping
 
@@ -36,7 +37,8 @@ aclearningutil (existing ASP.NET Core host)
   │     ├── HabitItemsController    — items CRUD
   │     ├── ItemPropertiesController— properties CRUD
   │     ├── HabitCriteriaController — criteria CRUD
-  │     └── HabitPunchesController  — punch sessions CRUD + lists
+  │     ├── HabitPunchesController  — punch sessions CRUD + lists
+  │     └── SharedHabitsController  — read-only "shared with me" surface (the FR-6 exception)
   ├── Services (new)
   │     ├── HabitEvaluationService  — cycle windows + criterion tree evaluation
   │     ├── HabitRuleValidator      — shared business-rule validation (static)
@@ -76,7 +78,7 @@ Logical schema mirrors the reference 1:1. Column types below are the SQLite stor
 | Property | C# type | Notes |
 |---|---|---|
 | `Id` | `int` | INTEGER PK autoincrement |
-| `OwnerId` | `string` (450) | Tenant isolation key — indexed (`IX_Habits_OwnerId`) |
+| `OwnerId` | `string` (200) | Tenant isolation key — indexed (`IX_Habits_OwnerId`) |
 | `Name` | `string` | Required; **not unique** per user |
 | `Description` | `string?` | |
 | `Cycle` | `HabitCycle` enum | Stored as string: `daily` \| `weekly` \| `monthly` \| `whole` |
@@ -112,7 +114,7 @@ One grant per `(HabitId, GranteeUserId)` (unique index — a lost concurrent-inv
 | `Order` | `int` | Display order |
 | `CreatedAt` | `DateTime` | UTC |
 
-Index: `IX_HabitItems_HabitId`. Unique index `UX_HabitItems_HabitId_Name` on `(HabitId, Name)` — DB-level enforcement of item-name uniqueness; violation maps to `duplicate_name`.
+Index: `IX_HabitItems_HabitId`. Unique index `IX_HabitItems_HabitId_Name` on `(HabitId, Name)` — DB-level enforcement of item-name uniqueness; violation maps to `duplicateName` (and the app-level pre-check emits the same code).
 
 ### ItemProperty
 
@@ -128,7 +130,7 @@ Index: `IX_HabitItems_HabitId`. Unique index `UX_HabitItems_HabitId_Name` on `(H
 | `Order` | `int` | |
 | `CreatedAt` | `DateTime` | |
 
-Indexes: on `ItemId`, on `HabitId`; unique `UX_ItemProperties_ItemId_Name` on `(ItemId, Name)` → `duplicate_name`.
+Indexes: on `ItemId`, on `HabitId`; unique `IX_ItemProperties_ItemId_Name` on `(ItemId, Name)` → `duplicateName`.
 
 ### Criterion
 
@@ -144,7 +146,7 @@ Indexes: on `ItemId`, on `HabitId`; unique `UX_ItemProperties_ItemId_Name` on `(
 | `CycleTarget` | `double?` | Root in `daily` mode only: successful days required (daily cycle = 1, weekly ≤ 7, monthly ≤ 31, whole unbounded). NULL on non-root criteria **and** on cumulative roots — the cumulative target is derived (condition: threshold; composite: required passing operands) and never stored |
 | `CreatedAt` | `DateTime` | |
 
-Indexes: `IX_Criteria_HabitId`; unique `UX_Criteria_HabitId_Name`; **partial unique index** `UX_Criteria_OneRoot` on `(HabitId) WHERE "IsRoot" = 1` — SQLite supports partial indexes; configure via `.HasFilter("[IsRoot] = 1")`. This enforces the single-root invariant at the DB level.
+Indexes: `IX_Criteria_HabitId`; unique `IX_Criteria_HabitId_Name`; **partial unique index** `IX_Criteria_HabitId_Root` (explicit `HasDatabaseName`) on `(HabitId) WHERE "IsRoot" = 1` — SQLite supports partial indexes; configured via `.HasFilter("[IsRoot] = 1")`. This enforces the single-root invariant at the DB level.
 
 ### CriterionCondition (1:1 with a condition Criterion)
 
@@ -181,7 +183,7 @@ Join table, PK `(CriterionLeafId, ItemId)`; both FKs **Cascade**. Semantics unch
 | Property | C# type | Notes |
 |---|---|---|
 | `CompositeId` | `int` | FK → `CriterionComposite` **Cascade** |
-| `OperandCriterionId` | `int` | FK → `Criterion` **Restrict** (deleting an operand in use → `criterion_in_use`; DB-level safety net) |
+| `OperandCriterionId` | `int` | FK → `Criterion` **Restrict** (deleting an operand in use → `criterionInUse`; DB-level safety net) |
 | `Order` | `int` | |
 
 PK `(CompositeId, OperandCriterionId)`.
@@ -207,7 +209,7 @@ Indexes: `IX_Punches_OwnerId` (tenant key), and composite `(HabitId, PunchDate)`
 |---|---|---|
 | `Id` | `int` | PK |
 | `PunchId` | `int` | FK → `Punch` **Cascade** |
-| `PropertyId` | `int` | FK → `ItemProperty` **Restrict** (punch values block property deletion → `item_has_punches`) |
+| `PropertyId` | `int` | FK → `ItemProperty` **Restrict** (punch values block property deletion → `itemHasPunches`) |
 | `BoolValue` | `bool?` | boolean properties |
 | `NumValue` | `double?` | numeric properties, > 0 |
 | `ListEntries` | `string?` | JSON array of strings (System.Text.Json serialize/deserialize; store as TEXT) |
@@ -250,7 +252,7 @@ Dates serialize as `yyyy-MM-dd` (`DateOnly`), instants as ISO-8601 UTC **with a 
 
 ## REST API
 
-All endpoints require authentication (`[Authorize]` on the controller group; the project's existing default policy validates issuer + audience `api.knowledgebuilder`). The reference's public `GET /version` is **not duplicated** — `aclearningutil` keeps its existing health/version endpoint; the UI points at that one.
+All endpoints require authentication (`[Authorize]` on the controller group; the project's existing default policy validates issuer + audience `api.knowledgebuilder`). The reference's public `GET /version` is **not implemented** — `aclearningutil` has no health/version endpoint (its pipeline is `MapControllers()` only); the UI does not point at one.
 
 Every handler resolves `OwnerId` from the JWT (`ClaimTypes.NameIdentifier`, fallback `sub`) and applies it to every query. Cross-user access returns 404 (`notFound`), never 403 — same enumeration-resistance rule as the reference.
 
@@ -316,7 +318,7 @@ Name-snapshot staleness: `ownerName` reflects the inviter's display name when th
 
 | Method | Path | Success |
 |---|---|---|
-| `POST` | `/api/Habits/{habitId}/Items/{itemId}/Punches` | 201 — optional body `punchDate` records the session for a past in-window day (back-fill); omitted = server today |
+| `POST` | `/api/Habits/{habitId}/Items/{itemId}/Punches` | 201 — optional body `punchDate` records the session for a past in-window day (back-fill); omitted = server today. A **pure same-day boolean update returns 201 pointing at the EXISTING punch** (Location = that punch id; the upsert refreshes its `PunchedAt`) — no new row is created |
 | `GET` | `/api/Habits/{habitId}/Items/{itemId}/Punches` | 200 — optional `from`/`to` |
 | `GET` | `/api/Habits/{habitId}/Items/{itemId}/Punches/{punchId}` | 200 |
 | `PUT` | `/api/Habits/{habitId}/Items/{itemId}/Punches/{punchId}` | 200 |
@@ -455,7 +457,6 @@ Validation and conflict failures return RFC 7807 `ProblemDetails` (`application/
 
 ```json
 {
-  "type": "https://www.alvachien.com/errors/duplicate-entry",
   "title": "Unprocessable Content",
   "status": 422,
   "detail": "Entry 'ephemeral' already recorded for 'word' this cycle.",
@@ -463,7 +464,7 @@ Validation and conflict failures return RFC 7807 `ProblemDetails` (`application/
 }
 ```
 
-(If the project's existing controllers already use a custom error envelope for the learning APIs, match that envelope instead — the invariant is a stable machine-readable `code` string plus a human `detail`.)
+(As-built: this is the shipped envelope minus `type` — the filter sets only `Status`/`Title`/`Detail` + `Extensions["code"]` (which flattens to a top-level `"code"` member via `[JsonExtensionData]`); `ProblemDetails.Type` is never assigned, so responses carry the framework default `about:blank`.) The habit family deliberately does NOT share an error body with the older learning-API controllers; the invariant is the stable machine-readable `code` string plus a human `detail`, which the UI maps to i18n keys.)
 
 Code names follow the reference's snake_case values converted to camelCase to stay consistent with the new wire casing (the UI maps `code` → i18n key). The complete table:
 
@@ -549,7 +550,7 @@ No server support required — templates are client-side constants in the UI (kn
 - **Cross-app user lookup**: invitation pickers resolve usernames via acidserver's own `GET /api/users/search?q=` (JwtBearer, audience `api.knowledgebuilder` — the same token this API's clients already hold; returns `userId` + `userName` only, never email). This API stores `granteeUserId` verbatim; it never queries the identity database directly.
 - **Admin policy**: not applicable — habits are strictly user-scoped; the spec lists admin/user management as out of scope, so `Admin:UserIds` / `RequireAdmin` is untouched.
 - **CORS**: already permits `http://localhost:4200`, `http://localhost:29800` (dev) and `https://www.alvachien.com` (prod) — no changes needed.
-- **appsettings**: no new keys required. Optional: `HabitTracker:DateComparisonTimeZone` if the host timezone must be pinned explicitly instead of using `TimeZoneInfo.Local` (NFR-5).
+- **appsettings**: no new keys required. None of the habit feature's config is read today — cycle windows use the server's local time (`DateTime.Now`/`TimeSpan`) via NodaTime-free logic; a pinned-timezone option (`HabitTracker:DateComparisonTimeZone`) was considered but never implemented (NFR-5 left as server-local).
 
 ## Database Initialization & Deployment
 
@@ -567,8 +568,8 @@ No server support required — templates are client-side constants in the UI (kn
 - **No DB CHECK constraints** on enum columns (EF `EnsureCreated` doesn't emit them). Enforcement is application-level + unique/partial indexes at DB level. Acceptable at NFR-1 scale; add raw-SQL CHECKs later if ever bypassed.
 - **`DateOnly`/`DateTime` storage**: SQLite TEXT via EF conversions — identical behavior to the reference's ISO strings.
 - **Wire casing** changed snake_case → camelCase (breaking vs the reference UI); the new knowledgebuilder design uses the new contract throughout.
-- **`GET /version`** not duplicated; reuse `aclearningutil`'s existing endpoint.
+- **`GET /version`** not implemented (no such endpoint exists on `aclearningutil`; the UI carries its own version string from `environment`).
 - **Database upgrade path** with existing data (no migrations) — resolved by `HabitSchemaBootstrap` (see § Database Initialization); enum-as-string columns and `DateOnly` TEXT layout verified by round-trip tests against real SQLite files.
 - **Entity/DTO ids are `int`** (existing aclearningutil convention — all current tables use `int` PKs), not the reference's 64-bit ids. Practically irrelevant at the spec's scale; the wire format is unaffected.
 - **Template targets**: templates are client-side constants; the knowledgebuilder UI pre-fills the FR-5.4 defaults, all of which satisfy this API's daily-mode bounds (`weekly ≤ 7` — the current spec's `meditation` default is 5). Server validation stays strict.
-- **Wire contract tracks the 2026-10-01 spec revision** (success_type on the root, name-bound conditions, aggregation modes, derived cumulative targets, null open-ended `cycleTo`, all-day history, atomic uniqueness rejection, punch-date gating). The older `docs/habit-tracker-python-api-design.md` in the parent repo describes the standalone reference service and was updated alongside this document.
+- **Wire contract tracks the 2026-10-01 spec revision** (success_type on the root, name-bound conditions, aggregation modes, derived cumulative targets, null open-ended `cycleTo`, all-day history, atomic uniqueness rejection, punch-date gating). The canonical wire/API reference is now `docs/habit-tracker-api-design.md` in the parent repo (as-built rewrite, 2026-10-09); it replaced the retired standalone-service doc `docs/habit-tracker-python-api-design.md`, whose filename is history.

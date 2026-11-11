@@ -9,8 +9,9 @@ All controllers live in [`src/aclearningutil/Controllers/`](../src/aclearninguti
 - **Base path**: each controller uses `[Route("api/[controller]")]`, so the path is `api/<ControllerName>` (controller name without the `Controller` suffix).
 - **`[ApiController]`**: all controllers set this, enabling automatic 400 validation responses for model-binding errors and inference of `[FromBody]` / `[FromRoute]`.
 - **Authentication**: every controller is decorated with `[Authorize]` **except** `LearningContentCategoriesController`, which is public. Auth uses JWT Bearer tokens issued by the Identity Server (audience `api.knowledgebuilder`).
-- **Rate limiting**: `TTSController`, `FormatLLMController`, and `EnglishLLMController` are decorated with `[EnableRateLimiting("LLMAndTTS")]` (policy configured in `Program.cs`). The habit-tracking controllers (§9–§14) are deliberately NOT rate-limited (user-scoped CRUD at personal-use volume).
-- **User scoping**: `UserLearningHistoriesController`, `UserLearningRatingsController` and `UserLoginHistoriesController` extract the user from the JWT via `ClaimTypes.NameIdentifier` (with `"sub"` fallback). All read/write operations are scoped to that user; the `UserId` column is always set server-side from the token and never trusted from the request body. The habit-tracking controllers use the same extraction (via `HabitControllerBase.GetUserId()`), always as `OwnerId`.
+- **Admin allowlist (`RequireAdmin`)**: the catalog-mutating `LearningContents` `POST`/`PUT`/`DELETE` actions add `[Authorize(Policy="RequireAdmin")]` (`LearningContentsController.cs:58,86,155`). The policy (`Program.cs:100-110`) is enforced by `Authorization/AdminUserAuthorizationHandler` against the `Admin:UserIds` config array — the `ClaimTypes.NameIdentifier`/`"sub"` values permitted to create/update/delete shared `LearningContents`. An authenticated non-admin gets `403 Forbidden`; an empty (or missing) array **fails closed** — nobody is admin. To authorize an operator: register the user in acidserver, look up its `AspNetUsers.Id`, and add it to `Admin:UserIds` in `appsettings.json`. All other endpoints and the `LearningContents` `GET`s need only a plain user token.
+- **Rate limiting**: `TTSController`, `FormatLLMController`, and `EnglishLLMController` are decorated with `[EnableRateLimiting("LLMAndTTS")]` — a process-global fixed window of **30 permits per minute** with a queue of **5** (oldest-first); rejections return `429 Too Many Requests` (`Program.cs:115-125`). The three client-triggerable statistics writes (`POST api/UserLoginHistories` §15, `POST api/UserLearningTimes` and `PUT api/UserLearningTimes/Preferences` §18) carry `[EnableRateLimiting("UserWrites")]` — a **per-user** fixed window of **10 permits per minute** partitioned on the token's user id (`RateLimiting/UserWriteRateLimiting.cs`; registered in `Program.cs`). The honest client cadence is ~1 heartbeat/minute/tab, so the ceiling only binds abusive loops — decisive because every accepted write takes SQLite's single global write lock. The two body-reading write routes also set `[RequestSizeLimit(1024)]` → `413` before MVC ever deserializes an oversized payload. The habit-tracking controllers (§9–§14) remain deliberately NOT rate-limited (user-scoped CRUD at personal-use volume), nor are the local-file-read endpoints §16–§17 (`WordAudio`/`WordDictionary`) and `Storage`.
+- **User scoping**: `UserLearningRatingsController`, `UserLoginHistoriesController` and `UserLearningTimesController` extract the user from the JWT via `ClaimTypes.NameIdentifier` (with `"sub"` fallback). All read/write operations are scoped to that user; the `UserId` column is always set server-side from the token and never trusted from the request body. The habit-tracking controllers use the same extraction (via `HabitControllerBase.GetUserId()`), always as `OwnerId`.
 - **Habit error envelope**: every habit-tracking controller (`Habits`, `HabitItems`, `ItemProperties`, `HabitCriteria`, `HabitPunches`, `SharedHabits`) applies the `[HabitExceptionFilter]` — business failures return RFC 7807 `application/problem+json` with a stable machine-readable `code` in `extensions.code` (full code table in [`design-habit-api.md`](design-habit-api.md) § Errors). Identity gates (`unauthenticated`, 401), tenant misses (`notFound`, 404 — cross-owner access never 403s), and validation failures (422) all travel through this envelope; no habit endpoint returns a bare `NotFound()`/`Unauthorized()` body. The route tables below list status codes in short form; habit routes additionally carry the coded ProblemDetails body on errors.
 - **Habit wire format**: habit DTOs are defined in `Models/HabitRequests.cs` / `Models/HabitResponses.cs`; enums travel as the spec's lowercase/snake strings (`"daily"`, `"per_cycle"`, `"union_distinct"`, …) and dates as `yyyy-MM-dd`. Required enums are nullable on the wire — omitting `cycle`/`propertyType`/`criterionType` is a 422 `missingCycle`/`missingPropertyType`/`missingCriterionType`, never a silent default. A non-string or unknown enum value fails at binding with a plain MVC 400 validation ProblemDetails (no `code`).
 - **`CancellationToken`**: appears in every action signature but is framework-injected (request-aborted token), not a caller-supplied parameter — it is omitted from the parameter tables below.
@@ -41,7 +42,7 @@ Referenced by the LLM and TTS controllers. Defined in [`src/aclearningutil/Model
 
 ### Entity bodies
 
-`POST`/`PUT` on the CRUD controllers accept the entity classes directly (`LearningContent`, `UserLearningHistory`, `UserLearningRating`). Their shapes are documented in [`docs/database-schema.md`](database-schema.md). Note: server-managed fields (`CreatedAt`, `UpdatedAt`, `UserId`) are ignored or overwritten on write.
+`POST`/`PUT` on the CRUD controllers accept the entity classes directly (`LearningContent`, `UserLearningRating`). Their shapes are documented in [`docs/design-database.md`](design-database.md). Note: server-managed fields (`CreatedAt`, `UpdatedAt`, `UserId`) are ignored or overwritten on write.
 
 ---
 
@@ -79,7 +80,7 @@ Get a single category by ID.
 
 **File**: [`LearningContentsController.cs`](../src/aclearningutil/Controllers/LearningContentsController.cs)
 **Route**: `api/LearningContents`
-**Auth**: `[Authorize]`
+**Auth**: `[Authorize]` for `GET`s; `[Authorize(Policy="RequireAdmin")]` for `POST`/`PUT`/`DELETE` (see Conventions → Admin allowlist)
 
 CRUD for learning content items.
 
@@ -119,7 +120,7 @@ Create a new content item.
 - `CategoryId` must reference an existing category.
 
 **Side effects**: `CreatedAt` and `UpdatedAt` are set server-side to `DateTime.UtcNow`.
-**Responses**: `201 Created` → `LearningContent` (with `Location` header pointing to `GetById`); `400 BadRequest` on validation failure.
+**Responses**: `201 Created` → `LearningContent` (with `Location` header pointing to `GetById`); `400 BadRequest` on validation failure; `403 Forbidden` for authenticated non-admins.
 
 ### `PUT api/LearningContents/{id}`
 
@@ -131,8 +132,8 @@ Update an existing content item.
 | `content` | body | `LearningContent` | yes | New field values. |
 
 **Validation**: same as `POST` (names, `FileUrl`, `CategoryId`).
-**Side effects**: `UpdatedAt` is set to `DateTime.UtcNow`. `CreatedAt` is preserved.
-**Responses**: `204 NoContent`; `400 BadRequest`; `404 NotFound`.
+**Side effects**: `UpdatedAt` is set to `DateTime.UtcNow`. `CreatedAt` is preserved. (`Version` is also written from the body — see `LearningContentsController.cs:115`.)
+**Responses**: `204 NoContent`; `400 BadRequest`; `404 NotFound`; `403 Forbidden` for authenticated non-admins.
 
 ### `DELETE api/LearningContents/{id}`
 
@@ -142,76 +143,14 @@ Delete a content item **and** its dependent records.
 |---|---|---|---|---|
 | `id` | route | int | yes | Content ID to delete. |
 
-**Side effects**: because the FK relationships use `DeleteBehavior.Restrict`, the controller manually removes all `UserLearningHistories` and `UserLearningRatings` rows referencing this content before deleting it.
-**Responses**: `204 NoContent`; `404 NotFound`.
+**Side effects**: because the FK relationships use `DeleteBehavior.Restrict`, the controller manually removes all `UserLearningRatings` rows referencing this content before deleting it.
+**Responses**: `204 NoContent`; `404 NotFound`; `403 Forbidden` for authenticated non-admins.
 
 ---
 
-## 3. `UserLearningHistoriesController`
+## 3. `UserLearningHistoriesController` — removed (2026-10-25)
 
-**File**: [`UserLearningHistoriesController.cs`](../src/aclearningutil/Controllers/UserLearningHistoriesController.cs)
-**Route**: `api/UserLearningHistories`
-**Auth**: `[Authorize]` (user-scoped)
-
-CRUD for the current user's learning history.
-
-### `GET api/UserLearningHistories`
-
-List the current user's history, optionally filtered, with pagination. Ordered by `LearnDate` descending. Includes the parent `Content`.
-
-| Parameter | Source | Type | Required | Default | Description |
-|---|---|---|---|---|---|
-| `contentId` | query | int? | no | — | Filter to a content item. |
-| `itemId` | query | int? | no | — | Filter to a specific item within the content. |
-| `page` | query | int? | no | `1` | Page number (1-based). |
-| `pageSize` | query | int? | no | `50` | Page size; clamped to `[1, 200]`. |
-
-**Responses**: `200 OK` → `List<UserLearningHistory>`; `401 Unauthorized` if no user ID in token.
-
-### `GET api/UserLearningHistories/{id}`
-
-Get a single history record belonging to the current user.
-
-| Parameter | Source | Type | Required | Description |
-|---|---|---|---|---|
-| `id` | route | int | yes | History record ID. |
-
-**Responses**: `200 OK` → `UserLearningHistory`; `401 Unauthorized`; `404 NotFound` (also returned if the record exists but belongs to another user).
-
-### `POST api/UserLearningHistories`
-
-Create a history record for the current user.
-
-| Parameter | Source | Type | Required | Description |
-|---|---|---|---|---|
-| `history` | body | `UserLearningHistory` | yes | Must include `ContentId`; optionally `ItemId`, `LearnDate`, `SuccessIndicator`. |
-
-**Validation**: `ContentId` must reference an existing `LearningContent`.
-**Side effects**: `UserId` is set from the JWT (body value ignored). `LearnDate` defaults to `DateTime.Today` if not supplied / equal to `default`.
-**Responses**: `201 Created` → `UserLearningHistory`; `400 BadRequest`; `401 Unauthorized`.
-
-### `PUT api/UserLearningHistories/{id}`
-
-Update one of the current user's history records.
-
-| Parameter | Source | Type | Required | Description |
-|---|---|---|---|---|
-| `id` | route | int | yes | History record ID. |
-| `history` | body | `UserLearningHistory` | yes | New field values. |
-
-**Validation**: `ContentId` must reference an existing `LearningContent`.
-**Side effects**: updates `ContentId`, `ItemId`, `LearnDate`, `SuccessIndicator`. `UserId` is unchanged.
-**Responses**: `204 NoContent`; `400 BadRequest`; `401 Unauthorized`; `404 NotFound`.
-
-### `DELETE api/UserLearningHistories/{id}`
-
-Delete one of the current user's history records.
-
-| Parameter | Source | Type | Required | Description |
-|---|---|---|---|---|
-| `id` | route | int | yes | History record ID. |
-
-**Responses**: `204 NoContent`; `401 Unauthorized`; `404 NotFound`.
+The per-item study log (`UserLearningHistories` table: `ContentId`/`ItemId`/`LearnDate`/`SuccessIndicator` rows, full CRUD) was retired without ever gaining a client — the product's per-word signal is `UserLearningRatings` (§4) and the study-usage rollups are `UserLoginHistories` (§15) and `UserLearningTimes` (§18). The entity, `DbSet`, controller, endpoints and tests are deleted; `Program.cs` startup issues `DROP TABLE IF EXISTS "UserLearningHistories"` so leftover legacy rows can never block content deletion through the retired table's `Restrict` FK. The section number stays vacant so §4–§18 cross-references remain valid.
 
 ---
 
@@ -225,14 +164,14 @@ CRUD for the current user's content ratings (`Rating` is a byte in 1–5).
 
 ### `GET api/UserLearningRatings`
 
-List the current user's ratings, optionally filtered, with pagination. Ordered by `ScoreDate` descending. Includes the parent `Content`.
+List the current user's ratings, optionally filtered, with pagination. Ordered by `ScoreDate` descending. The parent `Content` is **not** included: the navigation property is marked `[JsonIgnore]` on the entity, so the response carries the rating fields only (`id`, `userId`, `contentId`, `itemId`, `scoreDate`, `rating`) — a client listing the ratings of one content file already knows which content it is, and echoing the row once per rating only multiplied the payload.
 
 | Parameter | Source | Type | Required | Default | Description |
 |---|---|---|---|---|---|
 | `contentId` | query | int? | no | — | Filter to a content item. |
-| `itemId` | query | int? | no | — | Filter to a specific item within the content. |
-| `page` | query | int? | no | `1` | Page number (1-based). |
-| `pageSize` | query | int? | no | `50` | Page size; clamped to `[1, 200]`. |
+| `itemId` | query | int? | no | — | Filter to a specific item. Applied independently — may be used without `contentId`. |
+| `page` | query | int? | no | — | Page number (1-based). **Pagination is applied only when `page` or `pageSize` is supplied** (this endpoint is the one exception to the Pagination convention above); without them the full filtered list is returned, so clients can cache it as the complete rating set. |
+| `pageSize` | query | int? | no | — | Page size; clamped to `[1, 200]` (default `50` when paging). |
 
 **Responses**: `200 OK` → `List<UserLearningRating>`; `401 Unauthorized`.
 
@@ -259,7 +198,8 @@ Create a rating for the current user.
 - `ContentId` must reference an existing `LearningContent`.
 
 **Side effects**: `UserId` is set from the JWT (body value ignored). `ScoreDate` defaults to `DateTime.Today` if not supplied / equal to `default`.
-**Responses**: `201 Created` → `UserLearningRating`; `400 BadRequest`; `401 Unauthorized`.
+**Upsert**: `(UserId, ContentId, ItemId)` carries a unique index (`AppDbContext.cs:94-96`). When a row for the same triple already exists, the POST updates its `Rating`/`ScoreDate` and returns `200 OK` with that row instead of creating a duplicate.
+**Responses**: `201 Created` → `UserLearningRating` (new row); `200 OK` → `UserLearningRating` (existing triple updated); `400 BadRequest`; `401 Unauthorized`.
 
 ### `PUT api/UserLearningRatings/{id}`
 
@@ -437,6 +377,11 @@ The files are generated by `fetch_word_references.py` in the
 [`knowledgebuilder-content/util/how-to-use.md`](../../knowledgebuilder-content/util/how-to-use.md)
 for the content format and generation workflow.
 
+For new consumers prefer §17 `WordDictionaryController` (`GET api/WordDictionary?word=`):
+it reads the example sentences from `words.db` (`examples`) by word, so phrases,
+case and spelling variants need no filename-stem conventions. These JSON files
+remain served as-is (no current UI consumer).
+
 ---
 
 # Habit-Tracking Controllers (§9–§14)
@@ -483,7 +428,7 @@ Create habit + items + properties + criteria atomically (name-based cross-refere
 
 | Parameter | Source | Type | Required | Description |
 |---|---|---|---|---|
-| `dto` | body | `HabitCreate` | yes | `name`, `description?`, `cycle` (required, nullable wire field), `startDate`, `endDate?`, `items` (1–100, each ≥1 property ≤100), `criteria` (1–100, exactly one `isRoot`). |
+| `dto` | body | `HabitCreate` | yes | `name`, `description?`, `cycle` (required, nullable wire field), `startDate`, `endDate?`, `items` (1–100, each ≥1 property ≤100), `criteria` (1–100, exactly one `isRoot` — zero roots fails `noRootCriterion`). |
 
 **Validation**: `invalidName`/`validationTooLong` (name ≤500; description ≤2000); `invalidDateRange`; `missingCycle`; `noItems`/`noCriteria`/`tooManyEntries`; per item: `itemWithoutProperties`, `missingPropertyType`, `invalidPropertyType` (unknown member / name+id collision / habit-wide same-name⇒same-type), `invalidBaseRate` (non-numeric or ≤0/non-finite), `invalidItemUniqueness` (required for list, forbidden otherwise), `duplicateName` (item and property names); per criterion: `missingCriterionType`, `duplicateName`, `duplicateReference` (repeated scope-item / operand names), `tooManyEntries` (reference lists ≤100), condition: `unknownOperandName` (unresolvable property/scope names; subset scope missing the bound property), `invalidThreshold` (missing/≤0/non-finite; integer for boolean), composite: `invalidTarget` (missing operator), `invalidOperandCount` (NOT=1, AND/OR≥2); root: `invalidTarget`/`missingCycleTarget` per success-type rules; graph: `circularCriterion`. Any rejection writes nothing.
 
@@ -647,17 +592,19 @@ The "shared with me" surface. Non-invited ids and unknown ids are indistinguisha
 
 **File**: [`UserLoginHistoriesController.cs`](../src/aclearningutil/Controllers/UserLoginHistoriesController.cs)
 **Route**: `api/UserLoginHistories`
-**Auth**: `[Authorize]` (user-scoped)
+**Auth**: `[Authorize]` (user-scoped), POST rate-limited (`UserWrites`)
 
 The caller's own login history: **one row per user per server-local calendar day**, upserted when the SPA reports a completed OIDC sign-in. There is deliberately no `PUT`/`DELETE` and no by-id route — login truth must not be client-mutable.
 
-DTO: `UserLoginHistoryDto` — `{ loginDate (yyyy-MM-dd), firstLoginAt, lastLoginAt (UTC, 'Z'-suffixed), loginCount }`. POST takes **no body**: the user comes from the token and the clock from the server.
+DTO: `UserLoginHistoryDto` — `{ loginDate (yyyy-MM-dd), firstLoginAt, lastLoginAt (UTC, 'Z'-suffixed), loginCount }` (`loginCount` counts DEDUPLICATED sign-ins, see POST below). POST takes **no body**: the user comes from the token and the clock from the server.
 
 ### `POST api/UserLoginHistories`
 
-Upsert today's row: no row yet → insert with `firstLoginAt = lastLoginAt = now`, `loginCount = 1`; row exists → `lastLoginAt = now`, `loginCount += 1`. Repeat calls are idempotent for the row and cumulative for the count. The read-then-write runs inside one `Serializable` transaction (SQLite `BEGIN IMMEDIATE` — the write lock is taken before the read, so concurrent first-login POSTs can neither double-insert against the `(UserId, LoginDate)` unique index nor lose an increment; same mechanism as `HabitPunchesController.Create`).
+Upsert today's row: no row yet → insert with `firstLoginAt = lastLoginAt = now`, `loginCount = 1`; row exists → if `now − lastLoginAt` is at least the **5-minute dedup window** (`LoginDedupWindowSeconds = 300`), set `lastLoginAt = now` and `loginCount += 1`; within the window the POST is a **duplicate report** and the row is left untouched (still `200`, echoing the unchanged values) — so a scripted loop can neither mint `loginCount` nor walk `lastLoginAt` forward, and clock-skewed future stored instants never count either (review finding H3). `loginCount` therefore means "sign-ins at least 5 minutes apart on that day": a self-scoped cosmetic stat (rendered only on the caller's own user-detail page), whose scripted ceiling is 288/day before the `UserWrites` limiter even starts rejecting. The read-then-write runs inside one `Serializable` transaction (SQLite `BEGIN IMMEDIATE` — the write lock is taken before the read, so concurrent first-login POSTs can neither double-insert against the `(UserId, LoginDate)` unique index nor lose an increment; same mechanism as `HabitPunchesController.Create`).
 
-**Responses**: `200 OK` → `UserLoginHistoryDto` (always 200 — the row's identity is (user, day), not a new id); `401 Unauthorized` if no user ID in token.
+Per-user rate-limited (`UserWrites`, 10/min): the honest cadence is one call per interactive sign-in, and every call takes the database's global write lock — unlimited POSTs are a write-lock weapon (review finding H2).
+
+**Responses**: `200 OK` → `UserLoginHistoryDto` (always 200 — the row's identity is (user, day), not a new id; duplicate reports within the dedup window are 200 with unchanged values); `401 Unauthorized` if no user ID in token; `429 Too Many Requests` over the per-user window.
 
 ### `GET api/UserLoginHistories?from=&to=`
 
@@ -695,7 +642,7 @@ external-API spend, unlike `TTSController`.
 - Opens `Storage/words.db` read-only and runs `SELECT us_audio, uk_audio FROM words WHERE word = @word COLLATE NOCASE LIMIT 1`.
 - Prefers `us_audio`; falls back to `uk_audio` when US is absent. (Today all rows carry only US audio.)
 - The DB stores a relative path like `wordaudio/France.f5cd26.mp3`; only the basename is used and must end in `.mp3`. A `Path.GetFullPath` check confirms the resolved path stays inside `Storage/wordaudio/`.
-- Response carries `Cache-Control: public, max-age=86400` (1 day).
+- Response carries `Cache-Control: public, max-age=2592000` (30 days).
 
 **Responses**:
 - `200 OK` -> `FileResult` (`audio/mpeg`).
@@ -711,6 +658,101 @@ gitignored and populated manually (same convention as the five content folders).
 
 ---
 
+## 17. `WordDictionaryController`
+
+**File**: [`WordDictionaryController.cs`](../src/aclearningutil/Controllers/WordDictionaryController.cs)
+**Route**: `api/WordDictionary`
+**Auth**: `[Authorize]`
+
+Serves the dictionary detail of one word - Chinese definitions and bilingual
+example sentences - read from `Storage/words.db`, the same external read-only
+database as §16. The UI vocabulary review screen renders both lists below the
+word's gloss (gated by its hide-explanation setting); on `404` the sections
+stay hidden. Not rate-limited - a local file read with no external-API spend.
+
+### `GET api/WordDictionary`
+
+| Parameter | Source | Type | Required | Description |
+|---|---|---|---|---|
+| `word` | query | string | yes | The word/phrase to look up, e.g. `hello` or `at present`. Case-insensitive (`COLLATE NOCASE`); spelling variants resolve through `words.base_word` to the base spelling whose row carries the merged detail. |
+
+**Behavior**:
+- Resolves the request to the canonical DB key via `SELECT COALESCE(base_word, word) FROM words WHERE word = @word COLLATE NOCASE`; no row (or blank `word`, or missing `words.db`) → `404`.
+- Reads definitions with `SELECT part_of_speech, meaning FROM definitions WHERE word = @key ORDER BY seq, rowid` and examples with `SELECT source, translation FROM examples WHERE word = @key ORDER BY seq, rowid LIMIT 10` (`seq, rowid` because the base-word merge stamps deduplicated rows with `seq = -1`; the cap bounds the 77-sentence outliers).
+- `partOfSpeech` can be `""` - phrase glosses carry no POS label; the UI hides the chip.
+- The response echoes the resolved canonical spelling in `word` (differs from the request only for variants).
+- Response carries `Cache-Control: public, max-age=2592000` (30 days, same TTL as the audio).
+
+**Responses**:
+- `200 OK` -> `WordDictionaryDto` (`{ word, definitions[], examples[] }`; a known word with no children answers empty lists, not `404`).
+- `404 NotFound` - blank word; `words.db` missing; or the word has no row in `words`.
+
+Same provenance as §16 (`fetch_word.py` in `knowledgebuilder-content`, deployed
+by `publish-learning-all.ps1`). This endpoint supersedes the static
+`learnenglish/word_references/<word>.json` files of §8 for UI consumers:
+`words.db` is keyed by the word, not by a sanitized filename, so phrases and
+case need no client-side stem logic.
+
+---
+
+## 18. `UserLearningTimesController`
+
+**File**: [`UserLearningTimesController.cs`](../src/aclearningutil/Controllers/UserLearningTimesController.cs)
+**Route**: `api/UserLearningTimes`
+**Auth**: `[Authorize]` (user-scoped), POST/PUT-Preferences rate-limited (`UserWrites`)
+
+The caller's accumulated learning time: **one row per user per server-local calendar day per content category**, upserted by the SPA's 60-second heartbeat (fired only while an exercise page is visible and the user is active — see `UserLearningTimeService` in knowledgebuilder). There is deliberately no `PUT`/`DELETE` and no by-id route — learning time must not be client-mutable. The two write routes are per-user rate-limited (`UserWrites`, 10/min; honest cadence ~1/min/tab) and body-capped at 1 KB (`413`) — same rationale as §15: every accepted beat takes SQLite's global write lock (review finding H2).
+
+DTO: `LearningTimeDto` — `{ learnDate (yyyy-MM-dd), categoryId (1-6), learningSeconds, lastBeatAt (UTC, 'Z'-suffixed) }`. POST body: `LearningTimeBeatRequest` — `{ categoryId, userName? }`; the user comes from the token and every second from the server clock, so the client cannot forge a duration. `userName` is the sender's own display name for the leaderboard: trimmed, clamped to 200, stored only against the CALLER's rows (last non-empty beat wins) — a sender can at worst mislabel itself.
+
+### `POST api/UserLearningTimes`
+
+Upsert today's row for the posted category. The credit is **server-measured against a SHARED per-user-per-day beat cursor** — the latest accepted beat across ALL of the day's category rows (`MAX(lastBeatAt)` of the user/day rows, at most 6, read from the same locked snapshot as the row to upsert): the day has no rows → `learningSeconds = 60` (the day's FIRST beat bootstraps the minute the heartbeat loop had already been watching); otherwise add `min(round(now − cursor), 75)` seconds and move the beaten row's `lastBeatAt = now` (which moves the cursor). Negative elapsed (clock skew) and sub-second gaps credit 0, so replayed, early or multi-tab beats add ~nothing; a resumed-after-idle gap is capped at 75s because the idle minutes were never verified as learning.
+
+Crediting off the day cursor rather than the category row's own `lastBeatAt` is what bounds the **day total** (the sum across categories) by real elapsed time: a client looping all six categories earns the one true gap in total — not six — and the 60-second bootstrap can be collected only once per day, not once per category (review finding H1; per-row crediting allowed ≈6× inflation of leaderboard/detail totals). Per-category attribution is unchanged: each credit lands on the category the sender beats, so honest multi-category study still splits correctly.
+
+Like §15, the read-then-write runs in one `Serializable` transaction (SQLite `BEGIN IMMEDIATE`), guarding the `(UserId, LearnDate, CategoryId)` unique index and losing no increments under concurrency.
+
+**Validation**: `categoryId` outside 1-6 → `400 BadRequest`.
+**Responses**: `200 OK` → `LearningTimeDto` (always 200 — the row's identity is (user, day, category), not a new id); `401 Unauthorized` if no user ID in token; `429 Too Many Requests` over the per-user `UserWrites` window; `413` for bodies over 1 KB.
+
+### `GET api/UserLearningTimes?from=&to=&categoryId=`
+
+List the caller's rows, ordered by `LearnDate` descending then `CategoryId` ascending.
+
+| Parameter | Source | Type | Required | Default | Description |
+|---|---|---|---|---|---|
+| `from` | query | DateOnly? | no | `to - 89 days` | Inclusive start of the window. |
+| `to` | query | DateOnly? | no | server-local today | Inclusive end. Default window = trailing 90 days. |
+| `categoryId` | query | int? | no | all | Restrict to one category (1-6). |
+
+**Validation**: `from > to` → `400 BadRequest`; `categoryId` outside 1-6 → `400 BadRequest`.
+**Responses**: `200 OK` → `List<LearningTimeDto>`; `401 Unauthorized`.
+
+### `GET api/UserLearningTimes/Leaderboard?window=7&top=3`
+
+The site's first deliberate cross-user surface: the top learners over a rolling trailing window of `window` server-local days (inclusive of today), ranked by summed `learningSeconds`.
+
+| Parameter | Source | Type | Required | Default | Description |
+|---|---|---|---|---|---|
+| `window` | query | int? | no | `7` | Trailing days, clamped to `[1, 92]`. |
+| `top` | query | int? | no | `3` | Entries returned, clamped to `[1, 10]`. |
+
+Grouped per user; ordered `TotalSeconds` descending with `UserId` ascending as the stable tie-break. Each entry is `{ userId, userName, totalSeconds }` — `userName` is the display name stored via the heartbeat (MAX over the window's rows keeps it deterministic when they disagree), falling back to the first 8 characters of the id when none was ever sent. No emails, no per-day breakdown, no category detail. Requires a signed-in caller (`[Authorize]`) but is NOT owner-scoped by design; `knowledgebuilder`'s homepage surfaces it only while authenticated.
+
+**Responses**: `200 OK` → `List<LearningTimeLeaderboardEntry>` (empty list when nobody has beaten yet); `401 Unauthorized`.
+
+### `GET` / `PUT api/UserLearningTimes/Preferences`
+
+The caller's leaderboard visibility choice — the opt-out companion to the cross-user Leaderboard. Backed by `LeaderboardPreferences` (one optional row per user; **absence means visible**). Opting out hides the caller's totals from the leaderboard only: their beats keep accumulating and their own learning-time card is unaffected, and an opted-out user still sees everyone else's board.
+
+- `GET` → `LearningTimePreferencesDto` (`{ leaderboardOptOut }`, defaulting to `false` with no row).
+- `PUT` accepts the same DTO and upserts it (Serializable transaction, mirroring the beat handler; one row per user, every PUT updates it). The response echoes the stored value. Shares the beat's per-user `UserWrites` limiter (10/min) and 1 KB body cap — it takes the same global write lock. `401 Unauthorized` with no user ID in token; `429`/`413` as on POST.
+
+The Leaderboard query above excludes opted-out users via a `NOT IN` sub-query on that table.
+
+---
+
 ## Endpoint Summary
 
 | Method | Route | Auth | Rate-limited | Description |
@@ -719,14 +761,9 @@ gitignored and populated manually (same convention as the five content folders).
 | GET | `api/LearningContentCategories/{id}` | no | no | Get category |
 | GET | `api/LearningContents` | yes | no | List content (filter + paging) |
 | GET | `api/LearningContents/{id}` | yes | no | Get content |
-| POST | `api/LearningContents` | yes | no | Create content |
-| PUT | `api/LearningContents/{id}` | yes | no | Update content |
-| DELETE | `api/LearningContents/{id}` | yes | no | Delete content (+ dependents) |
-| GET | `api/UserLearningHistories` | yes (user) | no | List my history |
-| GET | `api/UserLearningHistories/{id}` | yes (user) | no | Get my history |
-| POST | `api/UserLearningHistories` | yes (user) | no | Create history |
-| PUT | `api/UserLearningHistories/{id}` | yes (user) | no | Update history |
-| DELETE | `api/UserLearningHistories/{id}` | yes (user) | no | Delete history |
+| POST | `api/LearningContents` | yes (admin) | no | Create content |
+| PUT | `api/LearningContents/{id}` | yes (admin) | no | Update content |
+| DELETE | `api/LearningContents/{id}` | yes (admin) | no | Delete content (+ dependents) |
 | GET | `api/UserLearningRatings` | yes (user) | no | List my ratings |
 | GET | `api/UserLearningRatings/{id}` | yes (user) | no | Get my rating |
 | POST | `api/UserLearningRatings` | yes (user) | no | Create rating |
@@ -736,7 +773,13 @@ gitignored and populated manually (same convention as the five content folders).
 | POST | `api/FormatLLM/AskAnything` | yes | yes | Subject LLM Q&A |
 | GET | `api/EnglishLLM/details` | yes | yes | English LLM Q&A |
 | GET | `api/Storage/{subfolder}/{filename}` | yes | no | Serve Storage file |
+| POST | `api/UserLearningTimes` | yes (user) | yes (user) | Learning-time heartbeat (server-credited, shared day cursor) |
+| GET | `api/UserLearningTimes` | yes (user) | no | List my learning time (day×category) |
+| GET | `api/UserLearningTimes/Leaderboard` | yes | no | Top learners over a trailing window |
+| GET | `api/UserLearningTimes/Preferences` | yes (user) | no | Leaderboard visibility choice |
+| PUT | `api/UserLearningTimes/Preferences` | yes (user) | yes (user) | Upsert visibility choice |
 | GET | `api/WordAudio` | yes | no | Per-word pronunciation audio (words.db) |
+| GET | `api/WordDictionary` | yes | no | Per-word definitions + examples (words.db) |
 | GET | `api/Habits` | yes (owner) | no | List my habits (+progress) |
 | GET | `api/Habits/{habitId}` | yes (owner) | no | Get habit |
 | POST | `api/Habits` | yes (owner) | no | Create habit + items + criteria |
@@ -770,5 +813,5 @@ gitignored and populated manually (same convention as the five content folders).
 | GET | `api/SharedHabits` | yes (invitee) | no | "Shared with me" gallery |
 | GET | `api/SharedHabits/{habitId}` | yes (invitee/owner) | no | Read-only habit detail |
 | GET | `api/SharedHabits/{habitId}/History` | yes (invitee/owner) | no | Read-only per-day history |
-| POST | `api/UserLoginHistories` | yes (user) | no | Upsert today's login row |
+| POST | `api/UserLoginHistories` | yes (user) | yes (user) | Upsert today's login row |
 | GET | `api/UserLoginHistories` | yes (user) | no | My per-day login history |

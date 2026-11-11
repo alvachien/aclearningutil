@@ -22,8 +22,8 @@ tests. **RC-3 is retired** — its shape is superseded by RC-5 + RC-9 (see spec
 ### Running the tests
 
 ```bash
-dotnet test                                        # everything
-dotnet test --filter "FullyQualifiedName~Habit"    # all habit tests (306)
+dotnet test                                        # everything (536 tests: 535 passed + 1 skipped, as of 2026-11-09)
+dotnet test --filter "FullyQualifiedName~Habit"    # all habit tests (307, as of 2026-11-07)
 dotnet test --filter "FullyQualifiedName~Running_TwoWeeks"  # the weekly-verdict scenarios
 ```
 
@@ -36,7 +36,7 @@ disposes it in `IDisposable.Dispose()`.
 | Factory | Provider | Used by | Notes |
 |---|---|---|---|
 | `TestDbContextFactory.CreateInMemoryDbContext()` | **real SQLite, `:memory:`** (`Mode=Memory;Cache=Shared`) | every data-touching test class | The whole suite. Full provider semantics — SQL translation, FK + unique-index enforcement, real transactions, `DateOnly` TEXT round-trips — the same engine production runs on, but in RAM: no disk file, and cleanup is just `context.Dispose()`. EF owns the pinned-open connection, so the database lives exactly as long as its context. |
-| *(file-based, per class)* | SQLite on a temp file | `HabitSchemaBootstrapTests`, `UserLoginHistorySchemaBootstrapTests`, `HabitUtcTimestampTests`, `HabitExceptionFilterTests`, `SqliteSerializableTransactionTests` | Deliberately *not* memory mode — these inspect raw schema / PRAGMA / UTC storage behavior on an actual file (and, for the transaction tests, production-style writer concurrency against a file DB); cleaned up with `SqliteConnection.ClearAllPools()` + file delete. `SqliteSerializableTransactionTests` additionally uses shared-cache named databases to prove the `IsolationLevel.Serializable` → `BEGIN IMMEDIATE` mapping that the habit punch/share write transactions rely on. |
+| *(file-based, per class)* | SQLite on a temp file | `HabitSchemaBootstrapTests`, `UserLoginHistorySchemaBootstrapTests`, `UserLearningTimesSqliteTests`, `HabitUtcTimestampTests`, `HabitExceptionFilterTests`, `SqliteSerializableTransactionTests` | Deliberately *not* memory mode — these inspect raw schema / PRAGMA / UTC storage behavior on an actual file (and, for the transaction tests, production-style writer concurrency against a file DB); cleaned up with `SqliteConnection.ClearAllPools()` + file delete. `SqliteSerializableTransactionTests` additionally uses shared-cache named databases to prove the `IsolationLevel.Serializable` → `BEGIN IMMEDIATE` mapping that the habit punch/share write transactions rely on. |
 
 Each `CreateInMemoryDbContext()` call gets a fresh isolated database (unique
 shared-cache name); pass the same `databaseName` to have two contexts share one.
@@ -258,10 +258,13 @@ verdict itself is wrong, not a provider artifact.
 upserts one row per user per **server-local calendar day**.
 
 - **`Controllers/UserLoginHistoriesControllerTests`** (in-memory SQLite factory)
-  — POST creates today's row (`count = 1`, `first = last`), a same-day re-POST
-  bumps `LoginCount` and `LastLoginAt` while `FirstLoginAt` stays immutable;
-  rows are scoped per caller (two users → two rows); a token without a user-id
-  claim → 401. GET returns only the caller's days newest-first, defaults to the
+  — POST creates today's row (`count = 1`, `first = last`); the 5-minute dedup
+  window (review finding H3) is pinned three ways: a pure-function sweep of
+  `IsDistinctLogin` (301 s vs 299 s vs 1-per-minute loop vs clock-skew), an
+  immediate same-day re-POST that must leave `LoginCount` AND `LastLoginAt`
+  untouched, and a seeded row 6 minutes old whose re-POST increments while
+  `FirstLoginAt` stays immutable; rows are scoped per caller (two users → two
+  rows); a token without a user-id claim → 401. GET returns only the caller's days newest-first, defaults to the
   trailing-90-day window (a row at `Today-200` is excluded), honors explicit
   `from`/`to`, and rejects an inverted range with 400. The controller computes
   "today" itself from the server clock, so — like the sanctioned
@@ -279,3 +282,30 @@ The transaction-level race guarantee (Serializable → `BEGIN IMMEDIATE`) is not
 re-implemented here; it is already proven generically by
 `SqliteSerializableTransactionTests` (§ 1), which the punch writes and this
 upsert both rely on.
+
+## 4. Learning-time and per-user write rate-limit tests
+
+`UserLearningTimesController` (§ 18 of [`design-controllers.md`](design-controllers.md))
+takes the SPA heartbeat into per-day-per-category rows. Beyond its upsert/GET/
+leaderboard/opt-out rules — the in-memory-SQLite
+`Controllers/UserLearningTimesControllerTests` and, on a temp-file database,
+`Controllers/UserLearningTimesSqliteTests` as the production-translation safety
+net for the heartbeat upsert, the leaderboard `GroupBy/Sum/Max` + `NOT IN`
+aggregates and the `DateOnly` range filters — the suite pins the two P0 fixes
+from the 2026-11-08 user-stats review:
+
+- **Shared day cursor (H1)** — a same-day second category starts at 0 credited
+  seconds (the 60s bootstrap is once per DAY, not per category), and a tight
+  six-category replay loop adds only the one capped real gap to the day total.
+  The SQLite class replays the cross-category crediting on a real file DB
+  (raw `LastBeatAt` backdate → a fresh category credits ~70s read from the
+  OTHER row's stored TEXT instant), so the cursor query is validated against
+  the provider production runs on.
+- **`UserWrites` limiter (H2)** — `RateLimiting/UserWriteRateLimitingTests`
+  covers partition-key extraction (NameIdentifier → `"sub"` → `"anonymous"`),
+  per-user bucket separation, the 10/min ceiling against the materialized
+  fixed-window limiter (ten back-to-back acquires pass, the eleventh is
+  rejected), and reflection checks that the three write actions actually carry
+  `[EnableRateLimiting("UserWrites")]` and the right `[RequestSizeLimit]`.
+  The middleware itself (window bookkeeping, the 429 response) is
+  framework-tested; these tests own OUR policy function and its wiring.

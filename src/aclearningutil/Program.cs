@@ -121,6 +121,14 @@ builder.Services.AddRateLimiter(options =>
         limiterOptions.QueueLimit = 5;
         limiterOptions.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
+    // Per-user limiter for the statistics write endpoints (login POST, learning-time
+    // heartbeat POST, Preferences PUT). Partitioned by the token's user id so one
+    // client looping the beat cannot monopolize SQLite's single global write lock —
+    // unlike the process-global LLMAndTTS policy above, honest traffic is ~1 beat per
+    // minute PER USER. See RateLimiting/UserWriteRateLimiting.cs.
+    options.AddPolicy<string>(
+        aclearningutil.RateLimiting.UserWriteRateLimiting.PolicyName,
+        aclearningutil.RateLimiting.UserWriteRateLimiting.ForPartition);
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 // Database - SQLite
@@ -163,6 +171,13 @@ using (var scope = app.Services.CreateScope())
     // does not add tables to an already-created DB). Idempotent; see Utility/HabitSchemaBootstrap.cs.
     await aclearningutil.Utility.HabitSchemaBootstrap.EnsureTablesAsync(db, app.Logger);
 
+    // The leaderboard's display name, added to UserLearningTimes after the table
+    // itself shipped. Must run AFTER the bootstrap above: a database older than the
+    // learning-time feature only gets its table there, and EnsureColumnAsync's
+    // ALTER needs it to exist (fresh databases already carry the column, making
+    // this a no-op, exactly like the LearningContents columns above).
+    await EnsureColumnAsync(db, app.Logger, "UserLearningTimes", "UserName", "TEXT");
+
     // Ensure the unique rating index exists on pre-existing databases. EnsureCreated()
     // only creates a missing database; older DBs may also hold duplicate rating rows
     // (a (UserId, ContentId, ItemId) triple rated more than once), which must be
@@ -173,6 +188,14 @@ using (var scope = app.Services.CreateScope())
     await db.Database.ExecuteSqlRawAsync(
         "CREATE UNIQUE INDEX IF NOT EXISTS IX_UserLearningRatings_UserId_ContentId_ItemId " +
         "ON UserLearningRatings (UserId, ContentId, ItemId);");
+
+    // Drop the retired UserLearningHistories table from pre-existing databases. The
+    // per-item study log was designed but never wired to a client (the product uses
+    // UserLearningRatings + UserLearningTimes instead); its model came out of the EF
+    // model on 2026-10-25, and the table's RESTRICT FK to LearningContents must not
+    // keep blocking content deletion once nothing cleans it up anymore. Idempotent;
+    // fresh databases never see it (the model no longer creates it).
+    await db.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"UserLearningHistories\";");
 
     // Seed LearningContentCategories (use INSERT OR IGNORE semantics for idempotent startup)
     var categories = new (int Id, string NameChinese, string NameEnglish)[]

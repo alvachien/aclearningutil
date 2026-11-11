@@ -38,8 +38,10 @@ namespace aclearningutil.Controllers
                 return Unauthorized("User ID not found in token.");
             }
 
+            // No .Include(Content): the nested content row is not part of the contract
+            // (the entity marks it [JsonIgnore]) — see the ratings section of
+            // docs/design-controllers.md.
             IQueryable<UserLearningRating> query = _dbContext.UserLearningRatings
-                .Include(r => r.Content)
                 .Where(r => r.UserId == userId);
 
             if (contentId.HasValue)
@@ -78,7 +80,6 @@ namespace aclearningutil.Controllers
             }
 
             var rating = await _dbContext.UserLearningRatings
-                .Include(r => r.Content)
                 .FirstOrDefaultAsync(r => r.Id == id && r.UserId == userId, cancellationToken);
 
             if (rating == null)

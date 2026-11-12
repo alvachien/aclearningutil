@@ -69,45 +69,6 @@ public class AppDbContextNewEntityTests : IDisposable
     }
 
     [Fact]
-    public async Task Can_Add_UserLearningHistory()
-    {
-        // Arrange
-        var category = new LearningContentCategory { Id = 100, NameChinese = "词汇", NameEnglish = "Vocabulary" };
-        var content = new LearningContent
-        {
-            Category = category,
-            NameChinese = "内容",
-            NameEnglish = "Content",
-            FileUrl = "url",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
-        _context.LearningContents.Add(content);
-        await _context.SaveChangesAsync();
-
-        var history = new UserLearningHistory
-        {
-            UserId = "user1",
-            ContentId = content.Id,
-            LearnDate = DateTime.Today,
-            SuccessIndicator = true
-        };
-
-        // Act
-        _context.UserLearningHistories.Add(history);
-        await _context.SaveChangesAsync();
-
-        // Assert
-        var result = await _context.UserLearningHistories
-            .Include(h => h.Content)
-            .FirstOrDefaultAsync(h => h.UserId == "user1");
-        result.Should().NotBeNull();
-        result!.Content.Should().NotBeNull();
-        result.Content!.NameEnglish.Should().Be("Content");
-        result.SuccessIndicator.Should().BeTrue();
-    }
-
-    [Fact]
     public async Task Can_Add_UserLearningRating()
     {
         // Arrange
@@ -144,39 +105,6 @@ public class AppDbContextNewEntityTests : IDisposable
         result!.Content.Should().NotBeNull();
         result.Content!.NameEnglish.Should().Be("Content");
         result.Rating.Should().Be(5);
-    }
-
-    [Fact]
-    public async Task Can_Query_UserLearningHistories_By_UserId()
-    {
-        // Arrange
-        var category = new LearningContentCategory { Id = 100, NameChinese = "词汇", NameEnglish = "Vocabulary" };
-        var content = new LearningContent
-        {
-            Category = category,
-            NameChinese = "内容",
-            NameEnglish = "Content",
-            FileUrl = "url",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
-        _context.LearningContents.Add(content);
-        await _context.SaveChangesAsync();
-
-        _context.UserLearningHistories.AddRange(
-            new UserLearningHistory { UserId = "user1", ContentId = content.Id, LearnDate = DateTime.Today, SuccessIndicator = true },
-            new UserLearningHistory { UserId = "user2", ContentId = content.Id, LearnDate = DateTime.Today, SuccessIndicator = false },
-            new UserLearningHistory { UserId = "user1", ContentId = content.Id, LearnDate = DateTime.Today, SuccessIndicator = true }
-        );
-        await _context.SaveChangesAsync();
-
-        // Act
-        var result = await _context.UserLearningHistories
-            .Where(h => h.UserId == "user1")
-            .ToListAsync();
-
-        // Assert
-        result.Should().HaveCount(2);
     }
 
     [Fact]

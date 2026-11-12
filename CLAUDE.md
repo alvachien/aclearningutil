@@ -27,12 +27,14 @@ The service is part of the broader H.I.H. (Home Information Hub) learning ecosys
 - `FormatLLMController.cs`: Subject-specific LLM Q&A (math, physics, chemistry) (`[Authorize]`)
 - `EnglishLLMController.cs`: English language learning assistant (`[Authorize]`)
 - `LearningContentCategoriesController.cs`: Read-only listing of learning content categories (public, no auth required)
-- `LearningContentsController.cs`: CRUD for learning content items (`[Authorize]`)
+- `LearningContentsController.cs`: CRUD for learning content items (`[Authorize]`; `POST`/`PUT`/`DELETE` additionally require the `RequireAdmin` policy — see Authorization)
 - `HabitsController.cs` + `HabitItems/HabitCriteria/HabitPunches/ItemProperties` controllers: habit-tracking API, strictly owner-scoped; `Habits` also hosts the owner-only `{id}/Shares` invitation CRUD (`GET`/`POST`/`DELETE`, `[Authorize]`, see `docs/design-habit-api.md`)
 - `SharedHabitsController.cs`: READ-ONLY "shared with me" surface (`GET /api/SharedHabits[/{id}][/History]`) — visible only to users with a `HabitShareGrant` (or the owner); the deliberate FR-6 exception; non-invited/unknown ids 404; no write endpoints
-- `UserLearningHistoriesController.cs`: CRUD for user learning history (`[Authorize]`, user-scoped via JWT claims, supports `?contentId=&itemId=` search)
 - `UserLearningRatingsController.cs`: CRUD for user content ratings (`[Authorize]`, user-scoped via JWT claims, rating 1-5, supports `?contentId=&itemId=` search)
-- `UserLoginHistoriesController.cs`: per-day login history (`[Authorize]`, user-scoped; `POST` upserts today's row — called by the SPA on completed OIDC sign-in; `GET ?from=&to=` lists the caller's days, default trailing 90; no PUT/DELETE)
+- `UserLoginHistoriesController.cs`: per-day login history (`[Authorize]`, user-scoped; `POST` upserts today's row — called by the SPA on completed OIDC sign-in, per-user rate-limited via the `UserWrites` policy, with a 5-minute dedup window so duplicate reports within it leave the row untouched (`loginCount` = distinct sign-ins/day); `GET ?from=&to=` lists the caller's days, default trailing 90; no PUT/DELETE)
+- `UserLearningTimesController.cs`: per-day-per-category learning time (`[Authorize]`, user-scoped; `POST { categoryId }` accepts the SPA heartbeat and credits only the server-measured seconds since the day's SHARED cursor (the latest accepted beat across all categories of that user/day), capped at 75/beat with a once-per-day 60s bootstrap — durations are unforgeable and the day total cannot exceed real elapsed time even for a six-category beat loop; `POST` + `PUT Preferences` carry `[EnableRateLimiting("UserWrites")]` (10/min/user) and a 1 KB body cap; `GET ?from=&to=&categoryId=` lists the caller's rows, default trailing 90; no PUT/DELETE)
+- `WordAudioController.cs`: per-word pronunciation audio (`GET /api/WordAudio?word=`, `[Authorize]`, no rate limit) — resolves the word in read-only `Storage/words.db` and streams the MP3 from `Storage/wordaudio/`
+- `WordDictionaryController.cs`: per-word dictionary detail (`GET /api/WordDictionary?word=`, `[Authorize]`, no rate limit) — Chinese definitions + bilingual example sentences (capped at 10) from read-only `Storage/words.db`; 404 for unknown words
 
 For the full controller reference (every route, parameter, validation rule, and response shape), see [`docs/design-controllers.md`](docs/design-controllers.md). It covers all controllers including `StorageController` (`GET /api/Storage/{subfolder}/{filename}`), which serves learning-content files and the per-word `learnenglish/word_references/<word>.json` reference files.
 
@@ -41,14 +43,19 @@ For the full controller reference (every route, parameter, validation rule, and 
 - `Entities/TtsMapping.cs`: Entity for TTS sentence-to-audio mappings
 - `Entities/LearningContentCategory.cs`: System-owned content categories (6 seeded defaults)
 - `Entities/LearningContent.cs`: Learning content items (FK to category; optional `Version`, `IncludeLatex`, `TranslationDisabled` fields)
-- `Entities/UserLearningHistory.cs`: User learning history (FK to content, user-scoped)
 - `Entities/UserLearningRating.cs`: User content ratings (FK to content, user-scoped, rating byte 1-5)
-- `Entities/UserLoginHistory.cs`: Per-day login history (one row per user per server-local day, unique `(UserId, LoginDate)`; first/last UTC instants + count)
+- `Entities/UserLoginHistory.cs`: Per-day login history (one row per user per server-local day, unique `(UserId, LoginDate)`; first/last UTC instants + count of deduplicated sign-ins, the second report within 5 minutes counting as the first one)
+- `Entities/UserLearningTime.cs`: Accumulated learning time (one row per user/day/category, unique `(UserId, LearnDate, CategoryId)`; server-credited `LearningSeconds`; each row's `LastBeatAt` UTC instant feeds the shared per-day cursor that bounds every credit)
+- `Entities/LeaderboardPreference.cs`: Per-user leaderboard opt-out (one row per user; absence = visible)
+- `Entities/Habit.cs`, `HabitItem.cs`, `Criterion.cs`, `Punch.cs`, `HabitShareGrant.cs`, `HabitEnums.cs`: habit-tracking model (owner-scoped habits, items with typed properties, criteria tree, per-day punches, invitation grants, cycle/property/criterion enums) — see `docs/design-habit-api.md`
 - Database schema includes unique index on `Sentence` for fast lookups
 
 **Utilities** (`src/aclearningutil/Utility/`)
 - `LLMUtil.cs`: HTTP client for DeepSeek API calls (thread-safe implementation)
 - `AliTokenUtil.cs`: Aliyun TTS token generation and API calls
+
+**Rate limiting** (`src/aclearningutil/RateLimiting/`)
+- `UserWriteRateLimiting.cs`: the `UserWrites` policy — a per-user fixed-window limiter (10/min, partitioned on `ClaimTypes.NameIdentifier` / `"sub"`) for the statistics write endpoints whose upserts take SQLite's global write lock, plus the 1 KB body cap constant those endpoints declare. Registered in `Program.cs`; see `docs/design-controllers.md` Conventions -> Rate limiting.
 
 **Models** (`Models/`)
 - DTOs for API requests/responses
@@ -162,10 +169,17 @@ Configured in `Program.cs`. Currently allows:
 - Development: `http://localhost:4200`, `http://localhost:29800`
 - Production: `https://www.alvachien.com`
 
+### Admin allowlist
+`appsettings.json` -> `Admin:UserIds` (array of strings) lists the user-ID claims permitted to mutate shared
+`LearningContents`. Policy `RequireAdmin` (`Program.cs`) + `Authorization/AdminUserAuthorizationHandler`;
+empty array = fail closed. This is local authorization only - no token or CORS change, so other
+projects need no matching config. See [`docs/design-controllers.md`](docs/design-controllers.md)
+(Conventions -> Admin allowlist).
+
 ## External Dependencies
 
 ### Aliyun TTS API
-- Endpoint: `http://nls-gateway.aliyuncs.com/stream/v1/tts`
+- Endpoint: `https://nls-gateway.aliyuncs.com/stream/v1/tts`
 - Requires: API Key, Access Key, Access Secret, and temporary token
 - Token generation: `AliTokenUtil.getToken()`
 
@@ -175,7 +189,7 @@ Configured in `Program.cs`. Currently allows:
 - Requires: API Key in configuration
 
 ### Identity Server
-- Development: `https://localhost:7228`
+- Development: `https://localhost:7228` (Docker-hosted; not managed by the workspace start/stop scripts)
 - Production: `https://www.alvachien.com/idserver`
 - Validates JWT tokens for all endpoints except `LearningContentCategoriesController` (public, no auth)
 - Audience: `api.knowledgebuilder` (validated in `Program.cs`)
@@ -191,12 +205,13 @@ aclearningutil.sln
 │   │   ├── Controllers/                   # API controllers
 │   │   ├── Data/                          # EF Core DbContext and entities
 │   │   ├── Models/                        # DTOs and domain models
+│   │   ├── RateLimiting/                  # UserWrites per-user policy for the stats writes
 │   │   ├── Utility/                       # Utility classes (LLM, Aliyun token)
 │   │   ├── AudioFiles/                    # Generated audio files (gitignored)
 │   │   └── Properties/                    # launchSettings.json, publish profiles
 │   └── Util/                              # Standalone helpers (Python DB patch, Node schema validator)
 ├── test/
-│   ├── aclearningutil.test/               # Unit tests (xUnit + Moq)
+│   ├── aclearningutil.test/               # Unit tests (xUnit + FluentAssertions + Moq)
 │   └── aclearningutil.test.common/        # Shared test utilities
 └── CLAUDE.md
 ```
@@ -245,15 +260,15 @@ GitHub Actions (`.github/workflows/build-test.yml`) restores, builds (`Release`)
 
 ## Code Quality Standards
 
-This project maintains:
-- ✅ Zero compiler warnings
-- ✅ No blocking async calls
-- ✅ Proper resource disposal
-- ✅ Thread-safe HTTP client usage
-- ✅ Comprehensive null checking
-- ✅ Async file I/O operations
+This project aims for (a maintained standard, not yet enforced by CI - `TreatWarningsAsErrors` is not set):
+- Zero compiler warnings (one analyzer rule, `EF1003`, is intentionally suppressed for the hard-coded internal SQL in `Program.cs`)
+- No blocking async calls (no `.Result` / `.Wait()`)
+- Proper resource disposal (`HttpRequestMessage` / `FileStream` via `using`; a few `HttpResponseMessage` instances are not yet disposed - known minor gap)
+- Thread-safe HTTP client usage (per-request `HttpRequestMessage`, no shared `DefaultRequestHeaders` mutation)
+- Comprehensive null checking (nullable reference types enabled)
+- Async file I/O operations
 
-When making changes, maintain these standards. Run `dotnet build` to verify zero warnings.
+When making changes, maintain these standards. Run `dotnet build` to verify warnings.
 
 ## Troubleshooting
 
@@ -275,6 +290,12 @@ Check logs for detailed error messages.
 - Verify Identity Server is running and accessible
 - Check that JWT tokens are not expired
 - Ensure token audience validation is configured correctly
+
+### `403 Forbidden` on content writes
+`LearningContents` `POST`/`PUT`/`DELETE` require the `RequireAdmin` policy; `GET`s do not.
+- A valid token with no admin membership yields `403` — this is authorization, not authentication, so the Identity Server being up is not the issue.
+- Check `Admin:UserIds` in `appsettings.json` (or the environment/secret override in production). An empty or missing array fails closed: no one is admin.
+- The comparison uses the token's `ClaimTypes.NameIdentifier` (`"sub"` fallback), so the allowlisted value must be the acidserver `AspNetUsers.Id` of the operating user.
 
 ## Related Projects
 

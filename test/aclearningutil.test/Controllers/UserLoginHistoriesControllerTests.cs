@@ -16,7 +16,7 @@ namespace aclearningutil.test.Controllers;
 /// <summary>
 /// Per-day login history: POST upserts the caller's (user, today) row, GET serves the
 /// caller's own days inside a bounded window. Scaffolding mirrors
-/// <see cref="UserLearningHistoriesControllerTests"/>.
+/// <see cref="UserLearningRatingsControllerTests"/> (user-scoping scaffolding).
 /// </summary>
 public class UserLoginHistoriesControllerTests : IDisposable
 {
@@ -63,14 +63,14 @@ public class UserLoginHistoriesControllerTests : IDisposable
         return ((OkObjectResult)result.Result!).Value.As<UserLoginHistoryDto>();
     }
 
-    private async Task SeedAsync(string userId, DateOnly day, int count = 1)
+    private async Task SeedAsync(string userId, DateOnly day, int count = 1, DateTime? lastLoginAt = null)
     {
         _context.UserLoginHistories.Add(new UserLoginHistory
         {
             UserId = userId,
             LoginDate = day,
             FirstLoginAt = day.ToDateTime(new TimeOnly(8, 0)),
-            LastLoginAt = day.ToDateTime(new TimeOnly(20, 0)),
+            LastLoginAt = lastLoginAt ?? day.ToDateTime(new TimeOnly(20, 0)),
             LoginCount = count,
         });
         await _context.SaveChangesAsync();
@@ -90,17 +90,52 @@ public class UserLoginHistoriesControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Post_Existing_Day_Updates_Last_And_Count_And_Keeps_First()
+    public void IsDistinctLogin_Implements_The_Dedup_Window()
+    {
+        var now = DateTime.UtcNow;
+        UserLoginHistoriesController.IsDistinctLogin(now, now.AddSeconds(-301))
+            .Should().BeTrue("a report past the 5-minute window is a distinct sign-in");
+        UserLoginHistoriesController.IsDistinctLogin(now, now.AddSeconds(-299))
+            .Should().BeFalse("a report inside the window is a duplicate");
+        UserLoginHistoriesController.IsDistinctLogin(now, now.AddMinutes(-1))
+            .Should().BeFalse("even a 1-per-minute scripted loop credits at most one login per window");
+        UserLoginHistoriesController.IsDistinctLogin(now, now.AddSeconds(30))
+            .Should().BeFalse("a stored instant ahead of the clock (skew) is indistinguishable from a replay");
+    }
+
+    [Fact]
+    public async Task Post_Within_Dedup_Window_Is_A_NoOp_Duplicate_Report()
     {
         var first = await PostAsync();
         var second = await PostAsync();
 
-        second.LoginCount.Should().Be(2, "the same-day POST upserts the existing row");
-        second.FirstLoginAt.Should().Be(first.FirstLoginAt, "FirstLoginAt is immutable once the day exists");
-        second.LastLoginAt.Should().BeOnOrAfter(second.FirstLoginAt);
+        second.LoginCount.Should().Be(1,
+            "a same-day re-POST moments later is a duplicate report (review finding H3), not a new sign-in");
+        second.LastLoginAt.Should().Be(first.LastLoginAt,
+            "a duplicate does not even walk LastLoginAt forward");
+        second.FirstLoginAt.Should().Be(first.FirstLoginAt);
 
         _context.ChangeTracker.Clear();
         (await _context.UserLoginHistories.CountAsync(h => h.UserId == TestUserId)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Post_After_Dedup_Window_Counts_As_A_New_Sign_In_And_Keeps_First()
+    {
+        await SeedAsync(TestUserId, Today, count: 2, lastLoginAt: DateTime.UtcNow.AddMinutes(-6));
+
+        _context.ChangeTracker.Clear();
+        var firstBefore = (await _context.UserLoginHistories.SingleAsync(h => h.UserId == TestUserId)).FirstLoginAt;
+
+        var dto = await PostAsync();
+
+        dto.LoginCount.Should().Be(3, "six minutes after the last accepted sign-in, the report is a distinct login");
+        dto.LastLoginAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(5));
+
+        _context.ChangeTracker.Clear();
+        var row = await _context.UserLoginHistories.SingleAsync(h => h.UserId == TestUserId);
+        row.FirstLoginAt.Should().Be(firstBefore,
+            "FirstLoginAt stays immutable however many sign-ins follow");
     }
 
     [Fact]

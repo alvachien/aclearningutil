@@ -18,6 +18,10 @@ public sealed record UserLoginHistoryDto
     /// <summary>UTC instant of the day's most recent recorded sign-in.</summary>
     public required DateTime LastLoginAt { get; init; }
 
-    /// <summary>Number of recorded sign-ins on that day.</summary>
+    /// <summary>
+    /// Number of DISTINCT sign-ins recorded on that day: the server treats a POST
+    /// closer than 5 minutes to the last accepted sign-in as a duplicate report,
+    /// so this counts human-scale sessions, not client calls.
+    /// </summary>
     public required int LoginCount { get; init; }
 }

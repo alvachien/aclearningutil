@@ -6,12 +6,16 @@ All seeding runs inline in [`src/aclearningutil/Program.cs`](../src/aclearningut
 
 ## Overview
 
-The seeder executes four phases, in order, every time the application starts:
+The seeder executes its phases, in order, every time the application starts:
 
 | Phase | What it does | Idempotent? | Source of truth |
 |---|---|---|---|
 | 0. **Create database** | `EnsureCreated()` builds the schema and applies the EF Core `HasData` seed | Yes (no-op if DB exists) | `AppDbContext.OnModelCreating` |
 | 0b. **Patch schema** | `EnsureColumnAsync` adds new nullable columns to `LearningContents` on pre-existing DBs | Yes (skips columns that already exist) | `EnsureColumnAsync` calls in `Program.cs` |
+| 0c. **Bootstrap habit tables** | `HabitSchemaBootstrap.EnsureTablesAsync` creates the six habit-tracking tables (+ indexes) on pre-existing DBs, where `EnsureCreated()` adds no tables | Yes (CREATE TABLE IF NOT EXISTS) | `Utility/HabitSchemaBootstrap.cs` |
+| 0d. **Patch learning-time schema** | `EnsureColumnAsync` adds `UserLearningTime.UserName` (TEXT, leaderboard display name) — must run after 0c so the table exists on old DBs | Yes (skips existing column; no-op on fresh DBs) | `EnsureColumnAsync` call in `Program.cs` |
+| 0e. **Ratings unique index** | Dedups `UserLearningRatings` (keeps newest row per `(UserId, ContentId, ItemId)`) then `CREATE UNIQUE INDEX IF NOT EXISTS IX_UserLearningRatings_UserId_ContentId_ItemId` | Yes (dedup converges; IF NOT EXISTS) | `Program.cs` startup SQL |
+| 0f. **Drop retired table** | `DROP TABLE IF EXISTS "UserLearningHistories"` (feature retired 2026-10-25; its Restrict FK must stop blocking content deletion) | Yes | `Program.cs` startup SQL |
 | 1. **Seed categories** | Inserts the 6 content categories if missing | Yes (`AnyAsync` + catch `SqliteException`) | Hardcoded array in `Program.cs` |
 | 2. **Migrate TTS cache** | One-time import of `AudioFiles/tts_map.json` into `TtsMappings` | Yes (file renamed on success) | `AudioFiles/tts_map.json` |
 | 3. **Sync content** | Reconciles `LearningContents` with 6 JSON index files under `Storage/` | Yes (add new, update changed, never delete) | `Storage/<subfolder>/<index>.json` |
@@ -20,7 +24,7 @@ The seeder executes four phases, in order, every time the application starts:
 
 - **Safe to run on every start.** Every phase checks for existing rows before writing; re-running only adds what is missing.
 - **Concurrent-start tolerant.** Two instances starting at once will not corrupt each other — unique constraints and caught `SqliteException`s act as a fallback for the `AnyAsync` race.
-- **Non-destructive.** Content items that disappear from the JSON index are *never* deleted from the database, because `UserLearningHistories` and `UserLearningRatings` reference them via foreign keys (`OnDelete: Restrict`). They are only logged as orphans.
+- **Non-destructive.** Content items that disappear from the JSON index are *never* deleted from the database, because `UserLearningRatings` references them via a foreign key (`OnDelete: Restrict`). They are only logged as orphans.
 - **Ensure the database schema is up to date.** `EnsureCreated()` creates the full schema from the EF Core model, so a fresh database always matches the current model. On an already-existing database the call is a no-op, so `EnsureColumnAsync` runs immediately after to `ALTER TABLE ... ADD COLUMN` for any new nullable columns (e.g. `IncludeLatex`, `TranslationDisabled`) — see Phase 0b and [`docs/design-database.md`](design-database.md) § Modifying the Schema.
 
 ### Overall startup sequence
@@ -39,6 +43,19 @@ sequenceDiagram
 
     Note over App: Phase 0b — patch schema for new nullable columns
     App->>SQLite: EnsureColumnAsync → ALTER TABLE ADD COLUMN (if missing)
+
+    Note over App: Phase 0c — bootstrap habit tables (old DBs only)
+    App->>SQLite: HabitSchemaBootstrap.EnsureTablesAsync → CREATE TABLE IF NOT EXISTS ×6
+
+    Note over App: Phase 0d — patch UserLearningTimes.UserName (after 0c)
+    App->>SQLite: EnsureColumnAsync → ALTER TABLE ADD COLUMN (if missing)
+
+    Note over App: Phase 0e — ratings dedup + unique index
+    App->>SQLite: DELETE duplicate (UserId,ContentId,ItemId) rows, keep MAX(Id)
+    App->>SQLite: CREATE UNIQUE INDEX IF NOT EXISTS IX_UserLearningRatings_UserId_ContentId_ItemId
+
+    Note over App: Phase 0f — drop retired UserLearningHistories table
+    App->>SQLite: DROP TABLE IF EXISTS "UserLearningHistories"
 
     Note over App: Phase 1 — seed 6 categories (idempotent)
     App->>SQLite: per-category AnyAsync → Add → SaveChangesAsync
@@ -98,6 +115,30 @@ await EnsureColumnAsync(db, app.Logger, "LearningContents", "TranslationDisabled
 > `Version` was added the same way historically; the standalone helper [`Util/add_learningcontent_columns.py`](../src/Util/add_learningcontent_columns.py) performs the identical patch outside the app for already-deployed databases.
 
 Only **nullable** columns can be added this way — SQLite's `ALTER TABLE ... ADD COLUMN` cannot add a `NOT NULL` column without a default. New required columns still require recreating the database.
+
+---
+
+## Phase 0c — Bootstrap habit tables (`HabitSchemaBootstrap`)
+
+`EnsureCreated()` never adds **tables** to an existing database, so the habit-tracking feature (added after the initial schema shipped) would be missing entirely on older DBs. `Utility/HabitSchemaBootstrap.EnsureTablesAsync` closes that gap by generating the EF model's create script and replaying its `CREATE TABLE` / `CREATE [UNIQUE] INDEX` statements as `IF NOT EXISTS` variants for the tables that post-date the original schema — `Habits`, `HabitItems`, `ItemProperties`, `Criteria`, `Punches`, `HabitShareGrants`, and `LeaderboardPreferences`. The statement set is derived from the current model (not a hand-maintained list), so schema evolution stays in `AppDbContext`. It runs after Phase 0b and before Phase 1, is idempotent, and is verified by `HabitSchemaBootstrapTests`. See [`design-database.md`](design-database.md) for the per-table schema.
+
+---
+
+## Phase 0d — Patch `UserLearningTimes.UserName`
+
+`EnsureColumnAsync(db, …, "UserLearningTimes", "UserName", "TEXT")` adds the leaderboard display-name column introduced after the table itself shipped. Ordering matters: it must run **after** Phase 0c, because a database older than the learning-time feature only gets its table there and the `ALTER` needs it to exist. Fresh databases already carry the column, so this is a no-op (exactly like the Phase 0b columns).
+
+---
+
+## Phase 0e — Ratings dedup + unique index
+
+The `(UserId, ContentId, ItemId)` triple is unique in the EF model (`AppDbContext.cs:94-96`), which fresh databases get from `EnsureCreated`. Older databases may both lack the index and already contain duplicate rows, so startup runs two plain-SQL steps: (1) `DELETE FROM UserLearningRatings WHERE Id NOT IN (SELECT MAX(Id) … GROUP BY UserId, ContentId, ItemId)` — keep the newest row per triple; (2) `CREATE UNIQUE INDEX IF NOT EXISTS IX_UserLearningRatings_UserId_ContentId_ItemId`. Both are idempotent and converge on re-run. Without (1), (2) would fail on any pre-existing duplicate, which is why dedup precedes the index.
+
+---
+
+## Phase 0f — Drop the retired `UserLearningHistories` table
+
+The per-item study log was retired 2026-10-25 without ever gaining a client (see [`design-controllers.md`](design-controllers.md) §3's vacancy note; the successors are `UserLearningRatings`, `UserLoginHistories`, `UserLearningTimes`). Its model left the EF model, so `EnsureCreated` cannot clean up old databases — and its `Restrict` FK to `LearningContents` would keep blocking content deletion for a table nothing writes to anymore. Startup issues `DROP TABLE IF EXISTS "UserLearningHistories"`; fresh databases never see it.
 
 ---
 
@@ -326,7 +367,7 @@ Found {Count} content items for category {CategoryId} in DB but not in {JsonFile
 These are NOT deleted to protect user learning histories and ratings. Remove them manually if needed.
 ```
 
-This protects referential integrity: `UserLearningHistories.ContentId` and `UserLearningRatings.ContentId` both reference `LearningContents(Id)` with `OnDelete: Restrict`. Deleting a content item that a user has history or ratings for would either fail or orphan user data. Manual removal is left to the operator.
+This protects referential integrity: `UserLearningRatings.ContentId` references `LearningContents(Id)` with `OnDelete: Restrict`. Deleting a content item that a user has rated would fail or orphan user data. Manual removal is left to the operator. (The retired `UserLearningHistories` table used to be a second reason for this rule; startup drops it from pre-existing databases — see [`design-database.md`](design-database.md) §4.)
 
 > `SaveChangesAsync()` is called whenever a sync pass produces **any** change — new inserts (`addCount > 0`) **or** in-place updates (`updateCount > 0`). Both adds and updates are persisted on every pass.
 
